@@ -90,3 +90,20 @@ class Engine:
                         key=lambda item: item['score'], reverse=True)} for path, row in zip(paths, scores)]}
         finally:
             self.lock.release()
+
+    def embed_image(self, image):
+        """对内存图片提取归一化特征，复用模型计算锁且不保存原图。"""
+        if self.state != 'ready':
+            raise RuntimeError('模型尚未就绪')
+        if not self.lock.acquire(blocking=False):
+            raise RuntimeError('模型正在处理其他请求')
+        try:
+            import torch
+            with torch.inference_mode():
+                inputs = self.processor(images=[image], return_tensors='pt').to(self.device)
+                vectors = self.model.get_image_features(**inputs)
+                if not isinstance(vectors, torch.Tensor):
+                    vectors = vectors.pooler_output
+                return torch.nn.functional.normalize(vectors.float(), dim=-1).cpu()[0].tolist()
+        finally:
+            self.lock.release()

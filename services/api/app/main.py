@@ -9,9 +9,21 @@ from .image_preference.routes import router as image_router
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from .db import connect, audit
+from contextlib import asynccontextmanager
+from .image_preference.ai import router as ai_router, start_worker
 
-app = FastAPI(title='apiserver', version=os.getenv('APP_VERSION', '0.2.0'), docs_url=None, redoc_url=None)
+
+@asynccontextmanager
+async def lifespan(app):
+    """正式容器启动持久任务调度，退出时停止领取新图片。"""
+    event, thread = start_worker()
+    yield
+    event.set()
+
+
+app = FastAPI(title='apiserver', version=os.getenv('APP_VERSION', '0.3.0'), lifespan=lifespan, docs_url=None, redoc_url=None)
 app.include_router(image_router)
+app.include_router(ai_router)
 
 
 @app.get('/', include_in_schema=False)

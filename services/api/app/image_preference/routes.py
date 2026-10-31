@@ -16,7 +16,7 @@ class Decision(BaseModel):
 
 @router.post('/scan')
 def scan_images():
-    """刷新四个目录的图片索引，不运行任何学习或判断。"""
+    """刷新人工及AI目录的图片索引，不运行任何学习或判断。"""
     return service.scan()
 
 
@@ -27,9 +27,9 @@ def image_stats():
 
 
 @router.get('/next')
-def get_next():
-    """获取下一张待人工分类图片。"""
-    return service.next_image()
+def get_next(source: Literal["all", "ai", "ai_like", "ai_notlike"] = "all"):
+    """按来源获取下一张初选或AI待复核图片。"""
+    return service.next_image(source)
 
 
 @router.get('/images/{image_id}/content')

@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from .engine import Engine
+from .preference import Preference, make_router
 
 
 class ImageRequest(BaseModel):
@@ -40,6 +41,8 @@ def create_app(engine=None):
 
     app = FastAPI(title='Mac AI 图像识别接口', version=VERSION, lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.engine = model_engine
+    preference = Preference(model_engine, config['preference_model_path'], config['callback_base'])
+    app.include_router(make_router(preference))
 
     @app.get('/health/live')
     def live():
@@ -58,7 +61,7 @@ def create_app(engine=None):
         """提供本地模型名称、运行设备、状态及请求限制。"""
         return {'model': 'google/siglip2-so400m-patch14-384', 'state': model_engine.state,
                 'device': model_engine.device, 'error': model_engine.error,
-                'max_batch_size': config['max_batch_size'], 'max_labels': 32, 'personal_preference_trained': False}
+                'max_batch_size': config['max_batch_size'], 'max_labels': 32, 'personal_preference_trained': preference.status()['trained']}
 
     def run_calculation(body, labels=None):
         """统一计算错误响应，并保留请求与结果之间的图片路径对应关系。"""

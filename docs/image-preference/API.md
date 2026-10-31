@@ -48,3 +48,25 @@
 ## 数据与后续开发
 
 image_items维护索引，image_moves记录移动意图及结果，audit_events保留扫描和选择审计。goodImages将来用于用户确认的训练流程，本版本没有训练入口或AI调用。完整接口规范为 `/openapi.json`。
+
+## 0.3.0 AI工作流接口
+
+完整流程见[AI-WORKFLOW.md](AI-WORKFLOW.md)。以下路径均相对110的`/api/v1/image-preference`。
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| POST | `/ai/start` | JSON `{"kind":"train"}` 开始学习，或 `{"kind":"screen"}` 持续筛选；201返回任务id |
+| POST | `/ai/stop` | 停止当前任务派发，当前单张可完成；返回stopping或idle |
+| GET | `/ai/status` | 最近run及last_training；run含state、total、processed、failed、model_version、error |
+| POST | `/ai/callback` | Mac调用：`{"job_id":"UUID","run_id":"UUID","result":{...}}`；重复回调不重复计数 |
+| GET | `/next?source=all` | 默认人工初选 |
+| GET | `/next?source=ai_like` | AI喜欢待复核 |
+| GET | `/next?source=ai_notlike` | AI不喜欢待复核 |
+| GET | `/next?source=ai` | 两个AI目录合并待复核 |
+| POST | `/images/{id}/decision` | 初选或复核均传`{"decision":"like"}`或`notlike`，移入人工标签目录 |
+
+训练回调result含`label`与`extracted:true`；筛选回调含`label`、`score`（0—1）、`model_version`。已停止任务的迟到回调返回409；已完成回调重发返回already_applied。原图和预览接口同样支持两个AI目录中的图片。
+
+任务状态：running、stopping、stopped、finalizing、completed、failed。学习进度processed仅在Mac回调被确认后增加；finalizing表示正在拟合轻量分类器，不再传图。筛选不会因当前队列空而自动completed，而是等待新图片；total随新图片增加。
+
+配置通过既有`PUT /api/v1/services/image-preference/settings/ai`写入`{"value":{"mac_url":"http://192.168.3.62:8111","callback_base":"http://192.168.3.110:8110"}}`，会记录审计。Mac回调实际地址在Mac服务config.json的callback_base配置；修改地址须两边同步。Mac IP变动后更新mac_url。正式Docker设置AI_WORKER_ENABLED=1，预检容器=0。

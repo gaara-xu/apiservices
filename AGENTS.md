@@ -19,3 +19,9 @@
 - 110正式容器使用host网络和always重启，大小写HTTP(S)_PROXY指向127.0.0.1:1087，大小写NO_PROXY包含本机及110并按实际内网目标补全；内网HTTP调用显式禁用代理。host模式不使用端口映射，候选容器用独立端口预检新版本。一次性迁移及候选容器完成即删除，不设置always。
 
 - 本项目规则默认维护在 `/Users/gaara/hades/AILocal/图像识别/AGENTS.md`，本仓库文件仅补充代码组织约束；后续规则变更先更新项目入口文件。
+
+- 最新用户修正：Mac通过110内网图片HTTP接口获取输入，取代共享目录强制要求。后续持续筛选由110调度、Mac计算，支持停止并保留进度；人工标签与AI预测分开记录。
+
+## 2026-11-01 当前实现范围
+
+110逐张通过HTTP请求体发送图片给Mac，Mac完成计算后回调110。AI结果只进入AIlikeImages或AINotlikeImages，人工复核后才移入likeImages或notlikeImages。训练仅使用goodImages、likeImages、notlikeImages的人工标签，网页提供训练和筛选启动/停止、进度与二次校验。此条取代此前共享路径读取及仅人工分类的阶段限制。部署不会自动启动用户图片的训练或筛选。

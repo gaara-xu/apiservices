@@ -9,3 +9,7 @@
 - `build.sh`：离线构建、迁移、健康检查、版本切换和失败清理。
 
 基础镜像固定 `python:3.10-slim-bullseye`；服务镜像 `apiserver:版本号`。详情见 `services/api/README.md`。
+
+## 图像喜好 AI 工作流（0.3.0）
+
+110页面支持人工初选、学习/筛选启动停止、实时进度和两类AI结果二次复核。Mac通过图片请求体计算并回调110。使用说明：[AI-WORKFLOW.md](docs/image-preference/AI-WORKFLOW.md)。Mac须启动且8111可被110访问；尚未训练个人模型时，先在网页点击“开始 AI 学习”。

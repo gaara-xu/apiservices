@@ -9,11 +9,11 @@ from ..db import connect, audit
 from .files import EXTENSIONS, safe_path, location_key, choose_destination, perform_move
 
 SERVICE = 'image-preference'
-STATES = {'all':'pending', 'good':'good', 'like':'like', 'notlike':'notlike'}
+STATES = {'all':'pending', 'good':'good', 'like':'like', 'notlike':'notlike', 'ai_like':'ai_like', 'ai_notlike':'ai_notlike'}
 
 
 def folder_config():
-    """从MySQL读取四个目录配置，并确认存在且相互独立。"""
+    """从MySQL读取人工与AI复核目录配置，并确认存在且相互独立。"""
     with connect() as conn, conn.cursor() as cur:
         cur.execute('SELECT value FROM service_settings WHERE service=%s AND setting_key=%s', (SERVICE, 'folders'))
         row = cur.fetchone()
@@ -69,7 +69,9 @@ def recover_moves(conn):
         except (OSError, ValueError) as exc:
             with conn.cursor() as cur:
                 cur.execute("UPDATE image_moves SET state='failed',error=%s WHERE id=%s", (str(exc), operation['id']))
-                state = 'pending' if Path(operation['source_path']).exists() and not Path(operation['destination_path']).exists() else 'error'
+                cur.execute('SELECT folder FROM image_items WHERE id=%s', (operation['image_id'],))
+                original = cur.fetchone()
+                state = STATES[original['folder']] if Path(operation['source_path']).exists() and not Path(operation['destination_path']).exists() else 'error'
                 cur.execute('UPDATE image_items SET state=%s WHERE id=%s', (state, operation['image_id']))
                 audit(cur, SERVICE, 'image', operation['image_id'], 'move_failed', None, {'error': str(exc), 'operation_id': operation['id']})
                 conn.commit()
@@ -111,9 +113,9 @@ def scan():
 def stats():
     """按当前配置目录统计待选、已选及异常图片数量。"""
     roots = folder_config()
-    counts = {state: 0 for state in ('pending','good','like','notlike','missing','error','moving')}
+    counts = {state: 0 for state in ('pending','good','like','notlike','ai_like','ai_notlike','missing','error','moving')}
     with connect() as conn, conn.cursor() as cur:
-        cur.execute('SELECT state,COUNT(*) AS amount FROM image_items WHERE root_path IN (%s,%s,%s,%s) GROUP BY state', tuple(str(root) for root in roots.values()))
+        cur.execute('SELECT state,COUNT(*) AS amount FROM image_items WHERE root_path IN (' + ','.join(['%s'] * len(roots)) + ') GROUP BY state', tuple(str(root) for root in roots.values()))
         for row in cur.fetchall():
             counts[row['state']] = row['amount']
     return counts
@@ -126,18 +128,21 @@ def public_item(row):
             'content_url':f"/api/v1/image-preference/images/{row['id']}/content"}
 
 
-def next_image():
-    """返回一张未分类图片，恢复中断操作并跳过外部已删除的文件。"""
+def next_image(source="all"):
+    """按人工初选或AI复核来源取一张图片，并恢复移动与跳过缺失文件。"""
     roots = folder_config()
     with locked_connection() as conn:
         recover_moves(conn)
         with conn.cursor() as cur:
             while True:
-                cur.execute("SELECT * FROM image_items WHERE folder='all' AND root_path=%s AND state='pending' ORDER BY created_at,id LIMIT 1", (str(roots['all']),))
+                keys = ['all'] if source == 'all' else ['ai_like', 'ai_notlike'] if source == 'ai' else [source]
+                clauses = ' OR '.join('(folder=%s AND root_path=%s AND state=%s)' for _ in keys)
+                params = tuple(value for key in keys for value in (key, str(roots[key]), STATES[key]))
+                cur.execute('SELECT * FROM image_items WHERE (' + clauses + ') ORDER BY created_at,id LIMIT 1', params)
                 row = cur.fetchone()
                 if not row:
                     return {'image':None}
-                if safe_path(roots['all'], row['relative_path']).is_file():
+                if safe_path(roots[row['folder']], row['relative_path']).is_file():
                     return {'image':public_item(row)}
                 cur.execute("UPDATE image_items SET state='missing' WHERE id=%s", (row['id'],))
                 audit(cur, SERVICE, 'image', row['id'], 'missing', row, {'state':'missing'})
@@ -161,8 +166,8 @@ def image_path(image_id):
     return path
 
 
-def decide(image_id, decision):
-    """提交人工标签，先持久化移动意图再无覆盖移动，并允许同标签重复提交。"""
+def decide(image_id, decision, ai=False):
+    """按人工确认或AI预测移动图片，拒绝AI覆盖人工标签，并支持同目标重试。"""
     roots = folder_config()
     with locked_connection() as conn:
         recover_moves(conn)
@@ -173,10 +178,11 @@ def decide(image_id, decision):
                 raise HTTPException(404, '图片不存在')
             if row['state'] == decision:
                 return {'image':public_item(row), 'already_applied':True}
-            if row['state'] != 'pending' or row['folder'] != 'all':
+            allowed = ('all',) if ai else ('all', 'ai_like', 'ai_notlike')
+            if row['folder'] not in allowed or row['state'] != STATES[row['folder']]:
                 raise HTTPException(409, '图片已处理或处于异常状态，请刷新')
             try:
-                source = safe_path(roots['all'], row['relative_path'])
+                source = safe_path(roots[row['folder']], row['relative_path'])
                 stat = source.stat()
                 if (stat.st_size, stat.st_mtime_ns) != (row['size_bytes'],row['mtime_ns']):
                     raise ValueError('图片已被修改，请重新扫描目录')

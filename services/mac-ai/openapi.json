@@ -2,9 +2,158 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Mac AI 图像识别接口",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "paths": {
+    "/api/v1/preference/status": {
+      "get": {
+        "tags": [
+          "个人喜好"
+        ],
+        "summary": "Status",
+        "description": "返回已训练模型状态，与SigLIP加载状态分别展示。",
+        "operationId": "status_api_v1_preference_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/preference/finalize/{run_id}": {
+      "post": {
+        "tags": [
+          "个人喜好"
+        ],
+        "summary": "Finalize",
+        "description": "仅完整学习完成后拟合并发布候选模型，重复调用返回同版本。",
+        "operationId": "finalize_api_v1_preference_finalize__run_id__post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "expected",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Expected"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/preference/jobs/{job_id}": {
+      "post": {
+        "tags": [
+          "个人喜好"
+        ],
+        "summary": "Job",
+        "description": "接收一张二进制图片，在工作线程计算并回调，限制单次请求64MiB。",
+        "operationId": "job_api_v1_preference_jobs__job_id__post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kind"
+            }
+          },
+          {
+            "name": "label",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Label"
+            }
+          },
+          {
+            "name": "model_version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Model Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health/live": {
       "get": {
         "summary": "Live",

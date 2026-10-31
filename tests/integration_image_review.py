@@ -58,8 +58,8 @@ def main():
                 print('真实MySQL验收通过：扫描、图片传输、喜欢/不喜欢移动、重名保护、重复提交、状态冲突、中断恢复；good目录未改动。')
         finally:
             with connect() as conn,conn.cursor() as cur:
-                cur.execute('DELETE image_moves FROM image_moves JOIN image_items ON image_moves.image_id=image_items.id WHERE image_items.root_path IN (%s,%s,%s,%s)',tuple(str(path) for path in roots.values()))
-                cur.execute('DELETE FROM image_items WHERE root_path IN (%s,%s,%s,%s)',tuple(str(path) for path in roots.values()))
+                cur.execute('DELETE image_moves FROM image_moves JOIN image_items ON image_moves.image_id=image_items.id WHERE image_items.root_path IN ('+','.join(['%s']*len(roots))+')',tuple(str(path) for path in roots.values()))
+                cur.execute('DELETE FROM image_items WHERE root_path IN ('+','.join(['%s']*len(roots))+')',tuple(str(path) for path in roots.values()))
                 audit(cur,'image-preference','verification',str(uuid.uuid4()),'cleanup',None,{'temporary_roots':[str(path) for path in roots.values()]})
                 conn.commit()
 

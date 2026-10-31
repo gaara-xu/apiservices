@@ -92,3 +92,14 @@ with httpx.Client(base_url="http://Mac内网IP:8111", trust_env=False, timeout=1
 启动脚本使用项目内锁避免重复操作，通过PID和实例令牌确认服务身份。端口被占用会报错，不杀死其他服务。模型加载失败时保留状态接口和日志，修复配置后运行重启。关闭时等待正在执行的请求完成，超时报告错误，不强制杀进程。
 
 仓库内同时提供 `openapi.json` 静态规范，接口变化时必须同步更新；实时规范以运行服务返回为准。
+
+## 0.2.0 图片接收与个人喜好接口
+
+- `GET /api/v1/preference/status`：trained、model_version及正式模型元数据。未完整学习时trained=false。
+- `POST /api/v1/preference/jobs/{job_id}?run_id={UUID}&kind=train&label=like`：请求体为图片二进制，Content-Type为application/octet-stream。label可为like/notlike。Mac逐图提取1152维归一化特征，幂等保存候选训练样本，然后回调110。请求阻塞至回调得到确认，正常返回callback_confirmed=true。
+- 同接口`kind=screen&model_version={训练UUID}`：使用固定版本评分，随后回调110 label、score和model_version。
+- `POST /api/v1/preference/finalize/{run_id}?expected={样本总数}`：确认全部样本且包含两类后训练类别均衡的L2逻辑回归，原子发布模型，重复调用幂等。
+
+110负责业务编号及图片移动，Mac不扫描业务目录、不调度图片。回调目标来自config.json的callback_base，不接受请求指定的任意回调目标。模型目录由preference_model_path配置。原图仅在内存中处理；64MiB/4000万像素上限。400步全批量优化轻量线性层，不微调SigLIP权重。全部训练特征在拟合时进入内存，当前用于几百至几千张人工样本；海量待筛图片逐张处理，不一次性载入。旧的路径特征和候选文本标签接口继续兼容。
+
+错误：422非法标签/图片或不完整训练，429并发繁忙，503模型/回调未就绪。回调失败由110按同一job_id重试，已提取样本不重复学习。训练候选和正式模型不混用；当前无自动准确率承诺，人工复核用于验证实际效果。

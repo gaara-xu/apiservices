@@ -2,9 +2,13 @@
   "host": "0.0.0.0",
   "port": 8111,
   "model_path": "/Users/gaara/hades/AILocal/ollama-models/siglip2-so400m-patch14-384",
-  "allowed_image_roots": ["/Users/gaara/hades/AILocal"],
+  "allowed_image_roots": [
+    "/Users/gaara/hades/AILocal"
+  ],
   "device": "auto",
   "max_batch_size": 4,
   "max_image_pixels": 40000000,
-  "startup_timeout_seconds": 180
+  "startup_timeout_seconds": 180,
+  "preference_model_path": "/Users/gaara/hades/AILocal/ollama-models/preference-classifier",
+  "callback_base": "http://192.168.3.110:8110"
 }

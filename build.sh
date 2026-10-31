@@ -83,7 +83,7 @@ wait_ready() {
 
 docker build --pull=false --force-rm --build-arg "APP_VERSION=$VERSION" -t "$IMAGE" -f services/api/Dockerfile .
 docker run --rm --env-file "$ENV_FILE" "${NETWORK_ARGS[@]}" -v "$RESOURCE_DIR:/resources" "$IMAGE" python -m app.migrate
-docker run -d --name "$CANDIDATE" --label "$action_label" --env-file "$ENV_FILE" "${NETWORK_ARGS[@]}" --no-healthcheck -v "$RESOURCE_DIR:/resources" "$IMAGE" uvicorn app.main:app --host 127.0.0.1 --port "$CANDIDATE_PORT"
+docker run -d --name "$CANDIDATE" --label "$action_label" --env-file "$ENV_FILE" "${NETWORK_ARGS[@]}" -e AI_WORKER_ENABLED=0 --no-healthcheck -v "$RESOURCE_DIR:/resources" "$IMAGE" uvicorn app.main:app --host 127.0.0.1 --port "$CANDIDATE_PORT"
 wait_ready "$CANDIDATE" "$CANDIDATE_PORT"
 docker rm -f "$CANDIDATE"
 if [[ -n "$OLD_IMAGE" ]]; then
@@ -92,7 +92,7 @@ if [[ -n "$OLD_IMAGE" ]]; then
     docker rename apiserver "$BACKUP"
 fi
 NEW_STARTED=1
-docker run -d --name apiserver --label "$action_label" --restart always --env-file "$ENV_FILE" "${NETWORK_ARGS[@]}" -v "$RESOURCE_DIR:/resources" "$IMAGE"
+docker run -d --name apiserver --label "$action_label" --restart always -e AI_WORKER_ENABLED=1 --env-file "$ENV_FILE" "${NETWORK_ARGS[@]}" -v "$RESOURCE_DIR:/resources" "$IMAGE"
 wait_ready apiserver
 SUCCESS=1
 if [[ -n "$OLD_IMAGE" ]]; then

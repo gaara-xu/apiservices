@@ -87,7 +87,7 @@ if [[ -n "$OLD_IMAGE" ]]; then
     docker rename apiserver "$BACKUP"
 fi
 NEW_STARTED=1
-docker run -d --name apiserver --label "$action_label" --restart unless-stopped --env-file "$ENV_FILE" -p 8110:8110 -v "$RESOURCE_DIR:/resources" "$IMAGE"
+docker run -d --name apiserver --label "$action_label" --restart always --env-file "$ENV_FILE" -p 8110:8110 -v "$RESOURCE_DIR:/resources" "$IMAGE"
 wait_ready apiserver
 SUCCESS=1
 if [[ -n "$OLD_IMAGE" ]]; then

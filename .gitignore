@@ -17,3 +17,5 @@ wheelhouse/
 
 .venv-test/
 !.env.example
+**/.venv/
+**/runtime/

@@ -1,11 +1,13 @@
-# Mac AI 服务（待实现）
+# Mac AI 图像识别服务
 
-仅在 Mac 执行模型加载、图片特征提取、喜好分类器训练及评分。110 发起计算请求；Mac 不承担业务目录扫描、业务任务领取、网页或业务数据库。
+提供SigLIP 2本地特征提取和候选标签分类，默认端口8111，模型仅在Mac运行。
 
-拟使用 Python、PyTorch、Transformers 和 scikit-learn。先验证固定 SigLIP 2 特征加轻量分类器的效果，再决定是否微调。接口、依赖版本和计算并发均待实现验证。
+1. 首次运行 `安装环境.command`。
+2. 运行 `启动.command`，等待模型就绪。
+3. 使用 `关闭.command`、`重启.command`、`状态.command` 管理服务。
 
-## 已有工具
+接口、参数、错误码、调用示例和共享目录配置见 [API.md](API.md)。本机入口位于“图像识别/MacAI”，对应本仓库services/mac-ai目录。
 
-`scripts/download_model.py` 为已执行成功的下载及校验工具；依据 `resources/model-info.json` 中的大小和哈希校验。它使用本机既定模型路径，下载临时文件和结果记录保存在图像识别项目内。仅在显式准备模型时使用镜像下载，正常 AI 服务不依赖公网。
+个人喜好分类器和标注训练尚未实现。模型通过PyTorch直接加载，不依赖Ollama；服务运行强制使用本地权重，禁止在线下载。
 
-模型目录：`/Users/gaara/hades/AILocal/ollama-models/siglip2-so400m-patch14-384`。这只是存储位置，通过 Python 加载，不使用 Ollama 推理服务。
+`scripts/download_model.py` 是已完成的模型准备工具，日常启动无需运行。当前权重存放在 `/Users/gaara/hades/AILocal/ollama-models/siglip2-so400m-patch14-384`。

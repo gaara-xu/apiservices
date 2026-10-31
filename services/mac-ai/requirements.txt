@@ -1,0 +1,11 @@
+torch==2.6.0
+transformers==4.51.3
+safetensors==0.5.3
+sentencepiece==0.2.0
+protobuf==5.29.3
+Pillow==11.1.0
+numpy==2.2.6
+fastapi==0.115.6
+uvicorn==0.34.0
+pydantic==2.10.6
+httpx==0.28.1

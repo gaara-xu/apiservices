@@ -10,9 +10,9 @@ def main():
     with httpx.Client(base_url=base, timeout=15, trust_env=False) as client:
         assert client.get('/health/ready').status_code == 200
         assert client.get('/openapi.json').status_code == 200
-        response = client.put(prefix+'/settings/validation', json={'value': {'version': '0.1.1', 'purpose': 'deployment verification'}})
+        response = client.put(prefix+'/settings/validation', json={'value': {'version': '0.2.0', 'purpose': 'deployment verification'}})
         assert response.status_code == 200, response.text
-        assert client.get(prefix+'/settings/validation').json()['value']['version'] == '0.1.1'
+        assert client.get(prefix+'/settings/validation').json()['value']['version'] == '0.2.0'
         response = client.post(prefix+'/tasks', json={'kind':'self-check','payload':{'no_ai_execution':True}})
         assert response.status_code == 201, response.text
         task_id = response.json()['id']

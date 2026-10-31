@@ -1,13 +1,24 @@
-"""多个项目共用的基础接口，不执行模型或传输图片。"""
+"""多个项目共用接口及人工图像分类页面，不执行模型。"""
 import json
 import os
 import uuid
 from typing import Literal
+from pathlib import Path
+from fastapi.responses import FileResponse
+from .image_preference.routes import router as image_router
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from .db import connect, audit
 
-app = FastAPI(title='apiserver', version=os.getenv('APP_VERSION', '0.1.0'), docs_url=None, redoc_url=None)
+app = FastAPI(title='apiserver', version=os.getenv('APP_VERSION', '0.2.0'), docs_url=None, redoc_url=None)
+app.include_router(image_router)
+
+
+@app.get('/', include_in_schema=False)
+@app.get('/image-preference', include_in_schema=False)
+def review_page():
+    """提供仅依赖内网资源的一图两按钮人工分类页面。"""
+    return FileResponse(Path(__file__).parent / 'static/review.html')
 
 
 class Setting(BaseModel):

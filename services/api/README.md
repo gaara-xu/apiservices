@@ -11,7 +11,7 @@
 - `/api/v1/services/{service}/tasks/{task_id}`：GET 查询、PATCH 状态及结果。
 - `/api/v1/services/{service}/audit`：查询模块数据变更审计。
 
-任务只提供持久化生命周期，未接入 Mac 调度器，不自动执行 AI。图片扫描、标注业务及网页仍待开发。110 不运行模型、不上传或代理图片。
+任务只提供持久化生命周期，未接入 Mac 调度器，不自动执行 AI。已实现图片扫描、人工分类网页、原图/预览传输与无覆盖移动，详见 `docs/image-preference/API.md`。110不运行模型。
 
 ## 部署
 
@@ -21,7 +21,7 @@
 
 ```bash
 cd /gaara/APIservicesResource/source
-bash build.sh 0.1.1
+bash build.sh 0.2.0
 ```
 
 服务器需已有基础镜像、Docker、Bash、flock，以及 `wheelhouse/`。构建离线安装锁定依赖，无需服务器连接公网。联网Mac可使用 pip download 的 Linux x86_64 / Python310 参数，按 `requirements.lock` 下载 wheelhouse，连同源码传至110。

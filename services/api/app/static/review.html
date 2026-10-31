@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>图片喜好 · 人工分类</title>
+<style>
+:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#101318;color:#eef1f5}*{box-sizing:border-box}body{margin:0;min-height:100dvh;display:flex;flex-direction:column}header{display:flex;justify-content:space-between;gap:16px;padding:18px 24px;border-bottom:1px solid #252a33}h1{font-size:17px;margin:0;font-weight:600}#counts{font-size:13px;color:#9aa5b4}main{width:min(1100px,100%);margin:auto;flex:1;display:flex;flex-direction:column;padding:16px 20px 24px;gap:12px}.stage{position:relative;flex:1;min-height:250px;height:calc(100dvh - 205px);display:flex;align-items:center;justify-content:center;background:#0b0d11;border-radius:12px;overflow:hidden}img{max-width:100%;max-height:calc(100dvh - 205px);object-fit:contain;display:block}img[hidden]{display:none}#placeholder{color:#aab5c5;text-align:center;padding:28px;line-height:1.7}#name{text-align:center;font-size:12px;color:#98a3b1;overflow-wrap:anywhere;min-height:16px}#message{min-height:20px;font-size:14px;text-align:center;color:#c4d0df;margin:0}.actions{display:grid;grid-template-columns:1fr 1fr;gap:14px;width:min(500px,100%);margin:0 auto}button{font:inherit;font-weight:600;border:1px solid #444e60;border-radius:10px;min-height:54px;cursor:pointer;background:#272e39;color:#eef1f5}button.like{background:#20654e;border-color:#2a8869}button:disabled{opacity:.4;cursor:default}button:focus-visible{outline:3px solid #9abaff;outline-offset:3px}button:active:not(:disabled){transform:translateY(1px)}@media(max-width:600px){header{padding:15px;flex-direction:column;gap:7px}main{padding:10px 12px 20px}.stage{height:calc(100dvh - 240px)}img{max-height:calc(100dvh - 240px)}}
+</style></head><body><header><h1>图片喜好 <span style="font-size:12px;color:#91a0b2;font-weight:400">人工分类</span></h1><div id="counts">正在读取目录…</div></header><main><div class="stage"><div id="placeholder">正在刷新图片目录…</div><img id="photo" alt="待分类图片" hidden></div><div id="name"></div><p id="message" role="status" aria-live="polite"></p><div class="actions"><button id="no" type="button" disabled>不喜欢</button><button id="yes" class="like" type="button" disabled>喜欢</button></div></main>
+<script>
+const base='/api/v1/image-preference';
+const photo=document.querySelector('#photo'),placeholder=document.querySelector('#placeholder'),message=document.querySelector('#message'),yes=document.querySelector('#yes'),no=document.querySelector('#no');
+let current=null,busy=true;
+// 切换交互状态，阻止连续点击导致多张图片被误移动。
+function setBusy(value){busy=value;yes.disabled=no.disabled=value||!current||photo.hidden;}
+// 调用接口并将服务端错误转换为可读提示。
+async function api(path,options={}){const response=await fetch(base+path,{cache:'no-store',...options});const data=await response.json();if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:'操作失败，请刷新页面重试');return data;}
+// 刷新索引统计，仅展示人工分类相关数量。
+async function refreshCounts(){const s=await api('/stats');document.querySelector('#counts').textContent=`待选 ${s.pending} · 喜欢 ${s.like} · 不喜欢 ${s.notlike} · 已确认样本 ${s.good}`;}
+// 请求下一张图片，图片实际加载完成前保持按钮禁用。
+async function nextImage(){setBusy(true);current=null;photo.hidden=true;placeholder.hidden=false;placeholder.textContent='正在读取图片…';const data=await api('/next');current=data.image;document.querySelector('#name').textContent=current?current.name:'';if(!current){placeholder.textContent='当前图片已全部分类。添加新图片后刷新页面即可继续。';return;}photo.onload=()=>{placeholder.hidden=true;photo.hidden=false;setBusy(false);};photo.onerror=()=>{placeholder.textContent='图片无法预览，请刷新页面重试。原文件未移动。';setBusy(true);};photo.src=current.preview_url;}
+// 保存人工选择，移动成功后才切换下一张，失败时保留当前图片。
+async function decide(value){if(busy||!current)return;setBusy(true);const id=current.id;try{await api(`/images/${id}/decision`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision:value})});message.textContent=value==='like'?'已移入喜欢目录':'已移入不喜欢目录';await nextImage();await refreshCounts();}catch(error){message.textContent=error.message;setBusy(false);}}
+// 初始刷新目录并展示第一张待分类图片，不发起AI任务。
+async function initialize(){try{await api('/scan',{method:'POST'});await refreshCounts();await nextImage();}catch(error){placeholder.textContent=error.message;message.textContent='请确认目录可用后刷新页面。';}}
+yes.addEventListener('click',()=>decide('like'));no.addEventListener('click',()=>decide('notlike'));initialize();
+</script></body></html>

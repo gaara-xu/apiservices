@@ -8,3 +8,8 @@
 - 本地工作仅限 `/Users/gaara/hades/AILocal/`；本项目非模型产物置于其中的 `图像识别/`，模型置于 `ollama-models/`。
 - 不提交权重、图片、运行日志、缓存、环境或凭据。
 - 110 容器获准挂载 `/gaara/APIservicesResource`，容器内路径及用途待定。
+
+- 110 后续容器使用用户指定的现有基础镜像 `python:3.10-slim-bullseye`，依赖须兼容 Python 3.10，不擅自替换镜像。
+
+- 所有业务数据统一存储在110的MySQL `apiserver`；每次数据库结构或维护数据变更必须新增迁移并更新 `docs/database/CHANGELOG.md`，日常业务更新原子写入审计表。
+- 110部署端口8110，镜像命名 `apiserver:版本号`。成功清理旧容器和旧镜像，失败清理本次失败版本及相关悬空镜像并保留旧服务，不删除Python基础镜像或其他项目资源。

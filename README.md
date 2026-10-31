@@ -1,11 +1,11 @@
-# API Services
+# apiserver
 
-多个内网项目共用的接口服务仓库。目前处于方案记录阶段，尚未实现或部署业务服务。
+多个内网项目共用的接口服务，统一使用 MySQL `apiserver` 保存业务数据。
 
-## 服务划分
+- `services/api/`：110 Docker基础接口服务，端口8110，提供配置、任务、结果和变更审计。
+- `services/mac-ai/`：独立的Mac AI模块，目前仅有模型准备工具，计算接口尚未实现。
+- `docs/image-preference/`：图像喜好分类需求。
+- `docs/database/CHANGELOG.md`：每次数据库迁移的说明。
+- `build.sh`：离线构建、迁移、健康检查、版本切换和失败清理。
 
-- `services/api/`：110 上的 Docker 共用 API 服务；按项目划分业务模块。
-- `services/mac-ai/`：Mac 本机 AI 计算服务，与 110 分开部署。
-- `docs/image-preference/`：图像喜好分类需求与架构。
-
-当前唯一可执行工具为 Mac AI 目录下的模型下载及校验脚本，不代表 AI 服务已实现。
+基础镜像固定 `python:3.10-slim-bullseye`；服务镜像 `apiserver:版本号`。详情见 `services/api/README.md`。

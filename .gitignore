@@ -11,3 +11,9 @@ tmp/
 *.safetensors
 *.joblib
 *.sqlite*
+wheelhouse/
+*.tar.gz
+.env.*
+
+.venv-test/
+!.env.example

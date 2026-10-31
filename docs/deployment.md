@@ -33,3 +33,19 @@
 ## 容器重启策略
 
 用户要求容器永远启动：正式容器使用 `--restart always`，已运行容器通过 `docker update --restart always apiserver` 更新，无需重建镜像。
+
+# 0.1.1 网络配置升级（2026-10-31）
+
+- 基础镜像保持不变，服务升级为apiserver:0.1.1。
+- 切换host网络，正式服务8110，候选预检127.0.0.1:18110。
+- 正式容器always重启；大小写HTTP/HTTPS代理设置为http://127.0.0.1:1087。
+- 大小写NO_PROXY包含localhost、127.0.0.1、::1、192.168.3.110，支持NO_PROXY_EXTRA追加目标。
+- 版本检查和健康检查显式不使用代理。运行时代理不自动修改Docker daemon或构建网络。
+- 成功清理当前部署包、旧容器和旧镜像；保留基础镜像。
+- 数据库结构没有变化，沿用001_initial。验收会更新deployment-check配置并新增验证任务，业务审计记录保留。
+
+## 0.1.1 实际验收结果
+
+已完成升级：host / always / healthy。容器内通过1087代理访问PyPI返回200；Python3.10接口测试与Mac端真实业务验收通过。用户明确授权后，firewalld public区域的TCP8110已在运行配置和永久配置中放行，内网可达。旧0.1.0容器和镜像已删除，Python基础镜像保留，0.1.0与0.1.1传输包均已清理。
+
+项目规则默认维护在 `/Users/gaara/hades/AILocal/图像识别/AGENTS.md`；AILocal根目录保留用户原有Docker配置，新增细则在项目规则文件维护。

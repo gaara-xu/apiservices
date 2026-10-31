@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 构建并健康检查新版本，成功清理旧版本，失败只清理本次构建并恢复旧服务。
+# 使用宿主机网络和代理构建部署，通过独立端口预检后切换，失败恢复旧服务。
 set -Eeuo pipefail
 cd "$(dirname "$0")"
 VERSION="${1:-$(cat VERSION)}"
@@ -14,6 +14,11 @@ OLD_IMAGE=''
 OLD_STOPPED=0
 NEW_STARTED=0
 SUCCESS=0
+CANDIDATE_PORT="${CANDIDATE_PORT:-18110}"
+[[ "$CANDIDATE_PORT" =~ ^[0-9]+$ ]] && (( CANDIDATE_PORT > 1024 && CANDIDATE_PORT < 65536 && CANDIDATE_PORT != 8110 )) || { echo '候选端口无效'; exit 2; }
+PROXY_URL="${PROXY_URL:-http://127.0.0.1:1087}"
+NO_PROXY_LIST="localhost,127.0.0.1,::1,192.168.3.110${NO_PROXY_EXTRA:+,$NO_PROXY_EXTRA}"
+NETWORK_ARGS=(--network host -e "http_proxy=$PROXY_URL" -e "https_proxy=$PROXY_URL" -e "HTTP_PROXY=$PROXY_URL" -e "HTTPS_PROXY=$PROXY_URL" -e "no_proxy=$NO_PROXY_LIST" -e "NO_PROXY=$NO_PROXY_LIST")
 mkdir -p "$RESOURCE_DIR/tmp" "$RESOURCE_DIR/deploy-logs"
 exec 9>"$RESOURCE_DIR/deploy.lock"
 flock -n 9 || { echo '其他部署正在执行'; exit 1; }
@@ -65,11 +70,11 @@ trap finish EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# 在容器内部检测服务和数据库就绪，失败时输出容器日志。
+# 直连候选端口并核对版本与数据库就绪，避免误判旧服务为新服务。
 wait_ready() {
-    local name="$1" attempt
+    local name="$1" port="${2:-8110}" attempt
     for attempt in {1..30}; do
-        if docker exec "$name" python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8110/health/ready',timeout=3)" >/dev/null 2>&1; then return 0; fi
+        if docker exec "$name" python -c "import json,urllib.request; o=urllib.request.build_opener(urllib.request.ProxyHandler({})); v=json.load(o.open('http://127.0.0.1:$port/health/live',timeout=3)); assert v['version']=='$VERSION'; o.open('http://127.0.0.1:$port/health/ready',timeout=3)" >/dev/null 2>&1; then return 0; fi
         sleep 2
     done
     docker logs "$name" || true
@@ -77,9 +82,9 @@ wait_ready() {
 }
 
 docker build --pull=false --force-rm --build-arg "APP_VERSION=$VERSION" -t "$IMAGE" -f services/api/Dockerfile .
-docker run --rm --env-file "$ENV_FILE" -v "$RESOURCE_DIR:/resources" "$IMAGE" python -m app.migrate
-docker run -d --name "$CANDIDATE" --label "$action_label" --env-file "$ENV_FILE" -v "$RESOURCE_DIR:/resources" "$IMAGE"
-wait_ready "$CANDIDATE"
+docker run --rm --env-file "$ENV_FILE" "${NETWORK_ARGS[@]}" -v "$RESOURCE_DIR:/resources" "$IMAGE" python -m app.migrate
+docker run -d --name "$CANDIDATE" --label "$action_label" --env-file "$ENV_FILE" "${NETWORK_ARGS[@]}" --no-healthcheck -v "$RESOURCE_DIR:/resources" "$IMAGE" uvicorn app.main:app --host 127.0.0.1 --port "$CANDIDATE_PORT"
+wait_ready "$CANDIDATE" "$CANDIDATE_PORT"
 docker rm -f "$CANDIDATE"
 if [[ -n "$OLD_IMAGE" ]]; then
     docker stop apiserver
@@ -87,11 +92,13 @@ if [[ -n "$OLD_IMAGE" ]]; then
     docker rename apiserver "$BACKUP"
 fi
 NEW_STARTED=1
-docker run -d --name apiserver --label "$action_label" --restart always --env-file "$ENV_FILE" -p 8110:8110 -v "$RESOURCE_DIR:/resources" "$IMAGE"
+docker run -d --name apiserver --label "$action_label" --restart always --env-file "$ENV_FILE" "${NETWORK_ARGS[@]}" -v "$RESOURCE_DIR:/resources" "$IMAGE"
 wait_ready apiserver
 SUCCESS=1
 if [[ -n "$OLD_IMAGE" ]]; then
     docker rm "$BACKUP"
     docker image rm "$OLD_IMAGE"
 fi
-echo "部署成功：$IMAGE，端口8110"
+# 仅删除当前版本明确命名的临时部署包，不扫描或删除其他业务文件。
+rm -f "$RESOURCE_DIR/apiserver-$VERSION.tar.gz"
+echo "部署成功：$IMAGE，host网络，端口8110，临时部署包已清理"

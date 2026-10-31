@@ -1,6 +1,6 @@
 # apiserver 基础接口服务
 
-部署在110，Python FastAPI + Uvicorn + MySQL 8，基础镜像固定 `python:3.10-slim-bullseye`。镜像采用 `apiserver:版本号`，容器名 `apiserver`，端口 `8110:8110`。
+部署在110，Python FastAPI + Uvicorn + MySQL 8，基础镜像固定 `python:3.10-slim-bullseye`。镜像采用 `apiserver:版本号`，容器名 `apiserver`，host网络直接监听端口 `8110`。
 
 ## 已实现
 
@@ -21,7 +21,7 @@
 
 ```bash
 cd /gaara/APIservicesResource/source
-bash build.sh 0.1.0
+bash build.sh 0.1.1
 ```
 
 服务器需已有基础镜像、Docker、Bash、flock，以及 `wheelhouse/`。构建离线安装锁定依赖，无需服务器连接公网。联网Mac可使用 pip download 的 Linux x86_64 / Python310 参数，按 `requirements.lock` 下载 wheelhouse，连同源码传至110。
@@ -36,3 +36,11 @@ python -m unittest discover -s tests -p test_deploy.py -v
 ```
 
 部署脚本测试使用模拟Docker，不操作真实容器。生产部署另行验证数据库、接口读写、状态转换和审计。
+
+## 网络与代理（0.1.1）
+
+正式容器使用 `--network host --restart always`，不使用端口映射。大小写HTTP_PROXY/HTTPS_PROXY均指向 `http://127.0.0.1:1087`，大小写NO_PROXY默认包含 `localhost,127.0.0.1,::1,192.168.3.110`。在执行build.sh前设置 `NO_PROXY_EXTRA=其他内网IP,主机名` 可追加实际内网目标；Mac地址待AI接入时配置，内网HTTP调用必须使用 `trust_env=False`。
+
+候选容器只监听127.0.0.1:18110（可通过CANDIDATE_PORT调整），通过禁用代理的检查核对新版本和数据库就绪后切换8110；候选和一次性迁移容器不设置always重启，结束即删除。健康检查不走代理。当前构建继续使用离线wheelhouse，运行时代理不影响Docker daemon和构建阶段。
+
+成功后自动删除挂载目录下当前版本 `apiserver-版本号.tar.gz`，本地传输暂存包在远端验收后清理。

@@ -1,5 +1,5 @@
 FROM python:3.10-slim-bullseye
-ARG APP_VERSION=0.1.0
+ARG APP_VERSION=0.1.1
 LABEL org.apiserver.managed="true"
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 APP_VERSION=${APP_VERSION} TMPDIR=/resources/tmp
 WORKDIR /app
@@ -9,5 +9,5 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels --require-hashes 
 COPY services/api/app /app/app
 COPY services/api/migrations /app/migrations
 EXPOSE 8110
-HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8110/health/ready', timeout=3)"
+HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 CMD python -c "import urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:8110/health/ready', timeout=3)"
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8110"]

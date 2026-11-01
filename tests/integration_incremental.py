@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.db import connect,audit
 from app.image_preference import service,ai
-from integration_ai import FakeMac
+from integration_ai import FakeMac,take_next
 
 
 def main():
@@ -44,7 +44,7 @@ def verify():
                         assert response.status_code==201,response.text
                         run_ids.append(response.json()['id'])
                         for _ in range(50):
-                            run,job=ai.next_job()
+                            run,job=take_next()
                             if job:
                                 try:ai.dispatch(run,job)
                                 except AssertionError as exc:ai.fail_job(job,str(exc))
@@ -57,9 +57,11 @@ def verify():
                         return result
                     first=learn();assert (first['reused'],first['extracted'])==(0,3),first
                     Image.new('RGB',(32,32),'white').save(roots['good']/'d.jpg')
-                    second=learn();assert (second['reused'],second['extracted'])==(3,1),second
+                    second=learn();assert second['input_plan']['new']=={'total':1,'completed':1,'failed':0},second
+                    assert (second['reused'],second['extracted'])==(3,1),second
                     Image.new('RGB',(32,32),'black').save(roots['good']/'b.jpg')
-                    third=learn();assert (third['reused'],third['extracted'])==(3,1),third
+                    third=learn();assert third['input_plan'].get('new',{}).get('total',0)==0 and third['input_plan']['changed']['total']==1,third
+                    assert (third['reused'],third['extracted'])==(3,1),third
                     (roots['good']/'a.jpg').rename(roots['notlike']/'a.jpg')
                     fourth=learn();assert (fourth['reused'],fourth['extracted'])==(4,0),fourth
                     with connect() as conn,conn.cursor() as cur:
@@ -73,6 +75,7 @@ def verify():
         finally:
             with connect() as conn,conn.cursor() as cur:
                 for run_id in run_ids:
+                    cur.execute('DELETE FROM image_learning_plan WHERE run_id=%s',(run_id,))
                     cur.execute('DELETE FROM image_ai_jobs WHERE run_id=%s',(run_id,))
                     cur.execute('DELETE FROM image_ai_runs WHERE id=%s',(run_id,))
                 placeholders=','.join(['%s']*len(roots));values=tuple(str(root) for root in roots.values())

@@ -162,6 +162,10 @@ def status():
             cur.execute("SELECT COUNT(*) AS amount FROM image_ai_jobs WHERE run_id=%s AND state='completed' AND JSON_EXTRACT(result,'$.reused')=true",(run['id'],))
             run['reused']=cur.fetchone()['amount']
             run['extracted']=run['processed']-run['reused']
+            cur.execute("SELECT p.input_kind,COUNT(*) AS total,SUM(j.state='completed') AS completed,SUM(j.state='failed') AS failed FROM image_learning_plan p JOIN image_ai_jobs j ON j.id=p.job_id WHERE p.run_id=%s GROUP BY p.input_kind",(run['id'],))
+            plan={row['input_kind']:{'total':int(row['total']),'completed':int(row['completed']),'failed':int(row['failed'])} for row in cur.fetchall()}
+            run['input_plan']=plan
+            run['plan_ready']=sum(value['total'] for value in plan.values())==run['total']
             cur.execute("SELECT j.image_id,i.relative_path AS name,j.error FROM image_ai_jobs j LEFT JOIN image_items i ON i.id=j.image_id WHERE j.run_id=%s AND j.state='failed' ORDER BY j.updated_at DESC LIMIT 20",(run['id'],))
             run['warnings']=cur.fetchall()
         cur.execute("SELECT state,COUNT(*) AS amount FROM image_learning_requests WHERE state IN ('pending','running') GROUP BY state")
@@ -244,6 +248,10 @@ def next_job():
             return None, None
         if run['state'] == 'finalizing':
             return run, None
+        if run['kind'] == 'train':
+            cur.execute('SELECT COUNT(*) AS amount FROM image_learning_plan WHERE run_id=%s',(run['id'],))
+            if cur.fetchone()['amount'] < run['total']:
+                return dict(run,planning=True), None
         cur.execute("SELECT * FROM image_ai_jobs WHERE run_id=%s AND state IN ('processing','pending') ORDER BY (state='processing') DESC,created_at,id LIMIT 1", (run['id'],))
         job = cur.fetchone()
         if job:
@@ -282,6 +290,43 @@ def cached_feature(job, checksum):
         return cur.fetchone()
 
 
+def prepare_learning(run):
+    """在学习前核对新增、修改和复用数量，逐项持久化以支持停止及重启恢复。"""
+    with connect() as conn,conn.cursor() as cur:
+        cur.execute('SELECT j.* FROM image_ai_jobs j LEFT JOIN image_learning_plan p ON p.job_id=j.id WHERE j.run_id=%s AND p.job_id IS NULL ORDER BY j.id',(run['id'],))
+        jobs=cur.fetchall()
+    for job in jobs:
+        with connect() as conn,conn.cursor() as cur:
+            cur.execute('SELECT state FROM image_ai_runs WHERE id=%s',(run['id'],))
+            if cur.fetchone()['state']!='running':return
+            cur.execute("SELECT j.id FROM image_ai_jobs j JOIN image_ai_runs r ON r.id=j.run_id WHERE j.image_id=%s AND j.state='completed' AND r.kind='train' AND j.run_id<>%s LIMIT 1",(job['image_id'],run['id']))
+            existing=cur.fetchone() is not None
+        kind='changed' if existing else 'new'
+        checksum=None;previous=None;error=None
+        try:
+            path=service.image_path(job['image_id'])
+            stat=path.stat()
+            if (stat.st_size,stat.st_mtime_ns)!=(job['size_bytes'],job['mtime_ns']):
+                raise ValueError('图片在目录检查后发生变化')
+            digest=hashlib.sha256()
+            with path.open('rb') as stream:
+                for chunk in iter(lambda:stream.read(1024*1024),b''):digest.update(chunk)
+            checksum=digest.hexdigest()
+            previous=cached_feature(job,checksum)
+            if previous:kind='reuse'
+        except (OSError,ValueError,HTTPException) as exc:
+            error=str(exc)
+        with connect() as conn,conn.cursor() as cur:
+            cur.execute('INSERT IGNORE INTO image_learning_plan(job_id,run_id,input_kind,content_sha256,reuse_run_id,reuse_job_id,error) VALUES(%s,%s,%s,%s,%s,%s,%s)',
+                        (job['id'],run['id'],kind,checksum,previous['run_id'] if previous else None,previous['id'] if previous else None,error))
+            conn.commit()
+    with connect() as conn,conn.cursor() as cur:
+        cur.execute('SELECT input_kind,COUNT(*) AS amount FROM image_learning_plan WHERE run_id=%s GROUP BY input_kind',(run['id'],))
+        counts={row['input_kind']:row['amount'] for row in cur.fetchall()}
+        audit(cur,service.SERVICE,'ai_run',run['id'],'input_plan_ready',None,counts)
+        conn.commit()
+
+
 def dispatch(run, job):
     """核对当前原图，未变图片优先复用特征，新增或修改图片才传给Mac重新提取。"""
     settings = config()
@@ -292,11 +337,20 @@ def dispatch(run, job):
     params = {'run_id': run['id'], 'kind': run['kind'], 'label': job['label'], 'model_version': run['model_version'] or ''}
     previous=None
     if run['kind']=='train':
-        digest=hashlib.sha256()
-        with path.open('rb') as stream:
-            for chunk in iter(lambda:stream.read(1024*1024),b''):digest.update(chunk)
-        checksum=digest.hexdigest()
-        previous=cached_feature(job,checksum)
+        with connect() as conn,conn.cursor() as cur:
+            cur.execute('SELECT * FROM image_learning_plan WHERE job_id=%s',(job['id'],))
+            plan=cur.fetchone()
+        if plan:
+            checksum=plan['content_sha256']
+            if plan['reuse_job_id']:
+                previous={'id':plan['reuse_job_id'],'run_id':plan['reuse_run_id']}
+        else:
+            # 兼容旧任务直接调用：新任务由prepare_learning先核对完整数量。
+            digest=hashlib.sha256()
+            with path.open('rb') as stream:
+                for chunk in iter(lambda:stream.read(1024*1024),b''):digest.update(chunk)
+            checksum=digest.hexdigest()
+            previous=cached_feature(job,checksum)
     with httpx.Client(trust_env=False, timeout=180) as client:
         reused=False
         if previous:
@@ -329,6 +383,9 @@ def defer_job(job, error):
 
 def finish_or_refill(run):
     """用本轮成功特征发布模型，异常仅作警告；筛选空队列时补充新增图片。"""
+    if run.get('planning'):
+        prepare_learning(run)
+        return
     if run['kind'] == 'train':
         try:
             with connect() as conn, conn.cursor() as cur:

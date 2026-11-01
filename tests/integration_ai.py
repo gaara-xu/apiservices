@@ -73,7 +73,7 @@ def verify():
     with tempfile.TemporaryDirectory(dir=runtime) as directory:
         roots={key:Path(directory)/key for key in service.STATES}
         for root in roots.values(): root.mkdir()
-        for key,name,color in [('good','good.jpg','red'),('notlike','bad.jpg','blue'),('all','first.jpg','red'),('all','second.jpg','green')]:
+        for key,name,color in [('good','good.jpg','red'),('notlike','bad.jpg','blue'),('all','first.jpg','orange'),('all','second.jpg','green')]:
             Image.new('RGB',(32,32),color).save(roots[key]/name)
         try:
             with patch.object(service,'folder_config',return_value=roots), patch.object(ai,'config',return_value={'mac_url':'http://fake-mac'}), TestClient(app) as client:
@@ -85,20 +85,20 @@ def verify():
                     assert response.status_code==201,response.text
                     run_ids.append(response.json()['id'])
                     assert client.post(prefix+'/ai/start',json={'kind':'train'}).status_code==409
-                    run,job=ai.next_job();assert job
+                    run,job=take_next();assert job
                     ai.dispatch(run,job)
                     duplicate=client.post(prefix+'/ai/callback',json=FakeMac.callback_body)
                     assert duplicate.json()['already_applied'] is True
                     assert client.get(prefix+'/ai/status').json()['run']['processed']==1
-                    run,job=ai.next_job();ai.dispatch(run,job)
-                    run,job=ai.next_job();assert job is None
+                    run,job=take_next();ai.dispatch(run,job)
+                    run,job=take_next();assert job is None
                     ai.finish_or_refill(run)
                     status=client.get(prefix+'/ai/status').json()['run']
                     assert status['state']=='completed' and status['processed']==status['total']==2,status
                     assert (roots['good']/'good.jpg').exists() and (roots['notlike']/'bad.jpg').exists()
                     response=client.post(prefix+'/ai/start',json={'kind':'screen'});assert response.status_code==201,response.text
                     run_ids.append(response.json()['id'])
-                    run,job=ai.next_job();ai.dispatch(run,job)
+                    run,job=take_next();ai.dispatch(run,job)
                     image=client.get(prefix+'/next?source=ai_like').json()['image'];assert image
                     assert client.post(prefix+'/ai/callback',json=FakeMac.callback_body).json()['already_applied'] is True
                     assert client.post(prefix+'/images/'+image['id']+'/decision',json={'decision':'notlike'}).status_code==200
@@ -114,43 +114,47 @@ def verify():
                     assert status['run']['kind']=='train' and status['screening']['state']=='paused_for_learning',status
                     feedback_run=status['run']['id'];run_ids.append(feedback_run)
                     for _ in range(10):
-                        run,job=ai.next_job()
+                        run,job=take_next()
                         if not job:
                             ai.finish_or_refill(run)
                             break
                         ai.dispatch(run,job)
+                    with connect() as conn,conn.cursor() as cur:
+                        cur.execute("SELECT COUNT(*) AS n FROM image_learning_plan WHERE run_id=%s AND input_kind='new'",(feedback_run,))
+                        assert cur.fetchone()['n']==1,'只筛选但未学习过的复核图片必须计入新增'
                     ai.review_learning()
                     status=client.get(prefix+'/ai/status').json()
                     assert status['run']['kind']=='screen' and status['run']['state']=='running',status
                     assert status['run']['model_version']==feedback_run
                     assert not status['review_learning']
                     # 第二张在计算期间人工先行分类，AI回调不得覆盖人工结果。
-                    run,job=ai.next_job()
+                    run,job=take_next()
                     response=client.post(prefix+'/images/'+job['image_id']+'/decision',json={'decision':'like'})
                     assert response.status_code==200,response.text
                     ai.dispatch(run,job)
                     assert service.stats()['like']==1 and service.stats()['ai_like']==0
                     assert client.post(prefix+'/ai/stop').json()['state']=='stopping'
-                    assert ai.next_job()==(None,None)
+                    assert take_next()==(None,None)
                     assert client.get(prefix+'/ai/status').json()['run']['state']=='stopped'
                     # 学习派发停止后拒绝晚到回调，旧模型仍然有效。
                     response=client.post(prefix+'/ai/start',json={'kind':'train'});assert response.status_code==201,response.text
                     run_ids.append(response.json()['id'])
-                    run,job=ai.next_job()
-                    client.post(prefix+'/ai/stop');ai.next_job()
+                    run,job=take_next()
+                    client.post(prefix+'/ai/stop');take_next()
                     stale={'job_id':job['id'],'run_id':run['id'],'result':{'label':job['label'],'extracted':True}}
                     assert client.post(prefix+'/ai/callback',json=stale).status_code==409
                     # 三次失败计数一次，训练失败不触发模型发布。
                     response=client.post(prefix+'/ai/start',json={'kind':'train'});assert response.status_code==201,response.text
                     run_ids.append(response.json()['id'])
                     for _ in range(3):
-                        run,job=ai.next_job();ai.fail_job(job,'故障注入')
+                        run,job=take_next();ai.fail_job(job,'故障注入')
                     assert client.get(prefix+'/ai/status').json()['run']['failed']==1
-                    client.post(prefix+'/ai/stop');ai.next_job()
+                    client.post(prefix+'/ai/stop');take_next()
                     print('AI流程真实MySQL验证通过：训练进度、模型发布、预测移动、人工复核、重复回调、人工优先、停止、失败重试。')
         finally:
             with connect() as conn,conn.cursor() as cur:
                 for run_id in run_ids:
+                    cur.execute('DELETE FROM image_learning_plan WHERE run_id=%s',(run_id,))
                     cur.execute('DELETE FROM image_ai_jobs WHERE run_id=%s',(run_id,))
                     cur.execute('DELETE FROM image_ai_runs WHERE id=%s',(run_id,))
                 placeholders=','.join(['%s']*len(roots));values=tuple(str(p) for p in roots.values())
@@ -159,6 +163,15 @@ def verify():
                 cur.execute('DELETE FROM image_items WHERE root_path IN ('+placeholders+')',values)
                 audit(cur,service.SERVICE,'verification',str(uuid.uuid4()),'cleanup',None,{'test_runs':run_ids,'temporary_roots':list(values)})
                 conn.commit()
+
+
+def take_next():
+    """测试中先完成新增图片核对，再返回实际派发任务。"""
+    run,job=ai.next_job()
+    if run and run.get('planning'):
+        ai.prepare_learning(run)
+        return ai.next_job()
+    return run,job
 
 
 def main():

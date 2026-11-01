@@ -88,3 +88,9 @@ AI复核`POST /images/{id}/decision`完成移动时原子新增image_learning_re
 `GET /ai/status`新增run.reused、run.extracted、run.warnings（最多20条明细）、review_learning（pending/running数量）、screening。优先返回活动任务，否则返回最近更新任务。processed仅成功数，failed是待重试异常数，两者之和为当前已处理数。存在异常时仍可completed并附warning；有效两类样本不足时needs_samples。
 
 `POST /ai/stop`同时停止当前任务与临时暂停的筛选，取消待执行复核请求，防止停止后自动重启。Mac网络/服务故障等待重试，不计图片失败。
+
+## 0.4.1 新增图片进度与样本口径
+
+`GET /ai/status`的run新增plan_ready、input_plan（new/changed/reuse各自的total、completed、failed）。派发前完成输入检查；检查过程中plan_ready=false，前端显示“正在核对新增图片”，不使用全部人工样本作为进度分母。只有本页面手动点击开始学习后才显示本轮新增进度条，复核学习、历史任务及页面刷新不显示，任务结束后隐藏。修改图片另列，不混入新增分母。
+
+目录统计：当前人工样本总数=good+like+notlike，喜欢=good+like，不喜欢=notlike。训练模型的历史样本数是上一轮快照，与当前目录新增后的总数分开。例如首轮403=363喜欢+40不喜欢，随后目录413=363喜欢+50不喜欢。

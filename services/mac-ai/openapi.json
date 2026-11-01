@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Mac AI 图像识别接口",
-    "version": "0.3.0"
+    "version": "0.3.1"
   },
   "paths": {
     "/api/v1/preference/status": {

@@ -100,3 +100,13 @@ AI复核`POST /images/{id}/decision`完成移动时原子新增image_learning_re
 `GET /next?source=ai_like|ai_notlike|ai`增加review_progress，含completed、remaining、total、position。position为当前图片序号（已复核+1），没有下一张时等于已完成数。总数为当前来源累计已复核+当前待复核，AI加入新图时总数增加；刷新页面保留累计进度。source=all返回review_progress=null。
 
 图片对象增加size_bytes，网页在图片下方显示原图大小，MB按1,000,000字节换算、两位小数，不使用预览图大小。不修改数据库结构。
+
+## 0.5.0 学习与筛查异步独立（取代暂停筛查的流程）
+
+允许一项train与一项screen同时运行，同类重复任务返回409。复核请求进入学习工作者，筛查工作者继续处理图片。手动学习只扫描人工样本目录；复核学习直接使用已完成分类的索引，不在共享业务锁内执行整库扫描。
+
+`GET /ai/status`分别返回training与screening，run兼容字段优先返回正在筛查的任务。学习详情与新增进度使用training，不会覆盖筛查状态。
+
+`POST /ai/stop?kind=train`仅停止学习及待执行复核请求；`kind=screen`仅停止筛查；默认all兼容旧的全停止调用。页面提供独立按钮。
+
+筛查单张在dispatch_model_version中冻结参数编号；后台发布新喜好参数只更新后续派发使用的默认编号，不改变在途图片的回调校验。SigLIP仍只加载一份。学习与筛查使用独立MySQL工作者锁，部署维护需先持有apiserver_ai_worker闸门，再等待apiserver_ai_worker_train和apiserver_ai_worker_screen释放。

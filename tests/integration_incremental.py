@@ -18,10 +18,15 @@ def main():
         lock.execute("SELECT GET_LOCK('apiserver_ai_worker',10) AS acquired")
         assert lock.fetchone()['acquired']==1
         try:
+            for kind in ('train','screen'):
+                lock.execute('SELECT GET_LOCK(%s,10) AS acquired',('apiserver_ai_worker_'+kind,))
+                assert lock.fetchone()['acquired']==1,'异步工作者仍忙，取消测试'
             lock.execute("SELECT COUNT(*) AS n FROM image_ai_runs WHERE state IN ('running','stopping','finalizing')")
             assert lock.fetchone()['n']==0,'存在用户任务，取消测试'
             verify()
         finally:
+            for kind in ('train','screen'):
+                lock.execute('SELECT RELEASE_LOCK(%s)',('apiserver_ai_worker_'+kind,))
             lock.execute("SELECT RELEASE_LOCK('apiserver_ai_worker')")
 
 

@@ -85,9 +85,11 @@ def recover_moves(conn):
             finalize_move(conn, operation)
 
 
-def scan():
-    """只扫描配置目录并登记图片元数据，不移动图片、不调用模型。"""
+def scan(folders=None):
+    """扫描指定目录并登记元数据；可仅检查人工样本，避免学习时扫描整个待筛图片库。"""
     roots = folder_config()
+    if folders is not None:
+        roots = {key:roots[key] for key in folders}
     token = str(uuid.uuid4())
     totals = {}
     with locked_connection() as conn:

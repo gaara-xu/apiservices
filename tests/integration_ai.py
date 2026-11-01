@@ -73,7 +73,7 @@ def verify():
     with tempfile.TemporaryDirectory(dir=runtime) as directory:
         roots={key:Path(directory)/key for key in service.STATES}
         for root in roots.values(): root.mkdir()
-        for key,name,color in [('good','good.jpg','red'),('notlike','bad.jpg','blue'),('all','first.jpg','orange'),('all','second.jpg','green')]:
+        for key,name,color in [('good','good.jpg','red'),('notlike','bad.jpg','blue'),('all','first.jpg','orange'),('all','second.jpg','green'),('all','third.jpg','purple'),('all','fourth.jpg','yellow')]:
             Image.new('RGB',(32,32),color).save(roots[key]/name)
         try:
             with patch.object(service,'folder_config',return_value=roots), patch.object(ai,'config',return_value={'mac_url':'http://fake-mac'}), TestClient(app) as client:
@@ -106,7 +106,7 @@ def verify():
                     assert client.post(prefix+'/images/'+image['id']+'/decision',json={'decision':'notlike'}).status_code==200
                     review=client.get(prefix+'/next?source=ai').json()
                     assert review['image'] is None and review['review_progress']=={'completed':1,'remaining':0,'total':1,'position':1},review
-                    # 人工复核只生成一次学习请求，暂停筛选后复用已有特征更新模型。
+                    # 人工复核只生成一次后台学习请求，筛查保持运行并冻结在途参数版本。
                     duplicate=client.post(prefix+'/images/'+image['id']+'/decision',json={'decision':'notlike'})
                     assert duplicate.json()['already_applied'] is True
                     with connect() as conn,conn.cursor() as cur:
@@ -114,28 +114,41 @@ def verify():
                         assert cur.fetchone()['n']==1
                     ai.review_learning()
                     status=client.get(prefix+'/ai/status').json()
-                    assert status['run']['kind']=='train' and status['screening']['state']=='paused_for_learning',status
-                    feedback_run=status['run']['id'];run_ids.append(feedback_run)
+                    assert status['training']['state']=='running' and status['screening']['state']=='running',status
+                    feedback_run=status['training']['id'];run_ids.append(feedback_run)
+                    concurrent_run,concurrent_job=take_next('screen')
+                    ai.dispatch(concurrent_run,concurrent_job)
+                    status=client.get(prefix+'/ai/status').json()
+                    assert status['screening']['processed']==2 and status['training']['state']=='running',status
+                    inflight_run,inflight_job=take_next('screen')
+                    old_version=inflight_job['dispatch_model_version']
                     for _ in range(10):
-                        run,job=take_next()
+                        run,job=take_next('train')
                         if not job:
                             ai.finish_or_refill(run)
                             break
                         ai.dispatch(run,job)
-                    with connect() as conn,conn.cursor() as cur:
-                        cur.execute("SELECT COUNT(*) AS n FROM image_learning_plan WHERE run_id=%s AND input_kind='new'",(feedback_run,))
-                        assert cur.fetchone()['n']==1,'只筛选但未学习过的复核图片必须计入新增'
                     ai.review_learning()
                     status=client.get(prefix+'/ai/status').json()
-                    assert status['run']['kind']=='screen' and status['run']['state']=='running',status
-                    assert status['run']['model_version']==feedback_run
+                    assert status['screening']['state']=='running' and status['screening']['model_version']==feedback_run,status
                     assert not status['review_learning']
-                    # 第二张在计算期间人工先行分类，AI回调不得覆盖人工结果。
-                    run,job=take_next()
+                    ai.dispatch(inflight_run,inflight_job)
+                    assert FakeMac.callback_body['result']['model_version']==old_version
+                    assert old_version!=feedback_run
+                    # 后续图片使用新参数，人工先行分类仍具有优先权。
+                    run,job=take_next('screen')
+                    assert job['dispatch_model_version']==feedback_run
                     response=client.post(prefix+'/images/'+job['image_id']+'/decision',json={'decision':'like'})
                     assert response.status_code==200,response.text
                     ai.dispatch(run,job)
-                    assert service.stats()['like']==1 and service.stats()['ai_like']==0
+                    assert service.stats()['like']==1 and service.stats()['ai_like']==2
+                    # 学习与筛查可同时运行，单独停止学习不停止筛查。
+                    response=client.post(prefix+'/ai/start',json={'kind':'train'})
+                    assert response.status_code==201,response.text
+                    run_ids.append(response.json()['id'])
+                    client.post(prefix+'/ai/stop?kind=train')
+                    assert take_next('train')==(None,None)
+                    assert client.get(prefix+'/ai/status').json()['screening']['state']=='running'
                     assert client.post(prefix+'/ai/stop').json()['state']=='stopping'
                     assert take_next()==(None,None)
                     assert client.get(prefix+'/ai/status').json()['run']['state']=='stopped'
@@ -168,12 +181,12 @@ def verify():
                 conn.commit()
 
 
-def take_next():
+def take_next(kind=None):
     """测试中先完成新增图片核对，再返回实际派发任务。"""
-    run,job=ai.next_job()
+    run,job=ai.next_job(kind)
     if run and run.get('planning'):
         ai.prepare_learning(run)
-        return ai.next_job()
+        return ai.next_job(kind)
     return run,job
 
 
@@ -183,10 +196,15 @@ def main():
         cur.execute("SELECT GET_LOCK('apiserver_ai_worker',10) AS acquired")
         assert cur.fetchone()['acquired']==1,'无法暂停后台工作者，取消测试'
         try:
+            for kind in ('train','screen'):
+                cur.execute('SELECT GET_LOCK(%s,10) AS acquired',('apiserver_ai_worker_'+kind,))
+                assert cur.fetchone()['acquired']==1,'异步工作者仍忙，取消测试'
             cur.execute("SELECT COUNT(*) AS amount FROM image_ai_runs WHERE state IN ('running','stopping','finalizing','paused_for_learning')")
             assert cur.fetchone()['amount']==0,'已有用户AI任务，取消测试'
             verify()
         finally:
+            for kind in ('train','screen'):
+                cur.execute('SELECT RELEASE_LOCK(%s)',('apiserver_ai_worker_'+kind,))
             cur.execute("SELECT RELEASE_LOCK('apiserver_ai_worker')")
 
 

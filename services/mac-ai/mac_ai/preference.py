@@ -15,12 +15,13 @@ import httpx
 class Preference:
     """管理候选特征与版本化分类器，人工标签不会被预测回填。"""
     def __init__(self, engine, directory, callback_base):
-        """设置独立模型目录和110回调地址，串行执行训练及推理。"""
+        """设置模型目录及回调地址，学习写入与筛查使用独立锁，共用同一视觉编码器。"""
         self.engine = engine
         self.root = Path(directory)
         self.root.mkdir(parents=True, exist_ok=True)
         self.callback_base = callback_base.rstrip('/')
         self.lock = threading.Lock()
+        self.screen_lock = threading.Lock()
 
     def identifier(self, value):
         """仅接受UUID任务及模型版本作为模型文件名。"""
@@ -188,8 +189,9 @@ def make_router(preference):
         chunks = bytearray()
         async for chunk in request.stream():
             chunks.extend(chunk)
-        if not preference.lock.acquire(blocking=False):
-            raise HTTPException(429, 'AI正在计算')
+        work_lock = preference.lock if kind == 'train' else preference.screen_lock
+        if not work_lock.acquire(blocking=False):
+            raise HTTPException(429, '同类AI请求正在处理')
         try:
             from starlette.concurrency import run_in_threadpool
             result = await run_in_threadpool(execute, job_id, run_id, kind, label, model_version, bytes(chunks))
@@ -199,7 +201,7 @@ def make_router(preference):
         except (RuntimeError, httpx.HTTPError) as exc:
             raise HTTPException(503, str(exc)) from exc
         finally:
-            preference.lock.release()
+            work_lock.release()
 
     def execute(job_id, run_id, kind, label, model_version, content):
         """执行特征学习或评分，110确认回调成功后才结束本张请求。"""

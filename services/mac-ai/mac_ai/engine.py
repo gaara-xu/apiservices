@@ -90,11 +90,11 @@ class Engine:
             self.lock.release()
 
     def embed_image(self, image):
-        """对内存图片提取归一化特征，复用模型计算锁且不保存原图。"""
+        """对内存图片提取特征，短时排队共享唯一SigLIP，不因另一类计算而直接拒绝。"""
         if self.state != 'ready':
             raise RuntimeError('模型尚未就绪')
-        if not self.lock.acquire(blocking=False):
-            raise RuntimeError('模型正在处理其他请求')
+        if not self.lock.acquire(timeout=120):
+            raise RuntimeError('等待共享视觉编码器超时，请重试')
         try:
             import torch
             with torch.inference_mode():

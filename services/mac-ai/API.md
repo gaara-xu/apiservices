@@ -113,3 +113,7 @@ with httpx.Client(base_url="http://Mac内网IP:8111", trust_env=False, timeout=1
 `POST /api/v1/preference/reuse/{job_id}`：查询参数run_id、label、source_run_id、source_job_id、content_sha256。复用原特征并应用新标签，回调带reused=true和content_sha256。缓存缺失返回404、摘要不符返回422，110自动回退传图重提，不丢样本。
 
 `POST /api/v1/preference/finalize/{run_id}?expected=N`可传JSON字符串数组（成功job_id清单），只用110确认成功的样本，不被未确认候选阻断。仍兼容不传清单的旧调用。需要两类有效标签；没有两类时明确提示，不覆盖旧正式模型。
+
+## 0.3.1 异步学习与筛查
+
+保持同一个Engine及SigLIP实例。学习特征写入/复用/参数拟合使用学习锁，筛查使用独立锁；个人参数拟合期间筛查请求仍可执行。共享视觉编码器只在单张提取时排队（最长120秒），不直接把其它类别正在计算当作请求失败。已有参数文件只读，新参数原子发布，在途预测继续使用派发编号对应的参数文件。

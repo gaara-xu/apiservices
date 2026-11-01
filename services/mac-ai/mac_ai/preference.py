@@ -1,13 +1,14 @@
 """个人喜好模型：逐图提取特征，完整学习后原子发布轻量分类器。"""
 import io
+import hashlib
 import json
 import os
 import threading
 import uuid
 from pathlib import Path
 import numpy as np
-from PIL import Image, ImageOps
-from fastapi import APIRouter, HTTPException, Request
+from .images import read_model_image
+from fastapi import APIRouter, HTTPException, Request, Body
 import httpx
 
 
@@ -51,28 +52,44 @@ class Preference:
             previous = json.loads(target.read_text())
             if previous['label'] != label:
                 raise ValueError('重复任务的人工标签不一致')
-            return {'label': label, 'extracted': True}
+            return {'label': label, 'extracted': True, 'reused': previous.get('reused', False),
+                    'content_sha256': previous.get('content_sha256') or hashlib.sha256(content).hexdigest()}
         vector = self.embedding(content)
-        self.atomic_json(target, {'label': label, 'embedding': vector})
-        return {'label': label, 'extracted': True}
+        checksum = hashlib.sha256(content).hexdigest()
+        self.atomic_json(target, {'label': label, 'embedding': vector, 'content_sha256': checksum})
+        return {'label': label, 'extracted': True, 'reused': False, 'content_sha256': checksum}
+
+    def reuse(self, run_id, job_id, label, source_run_id, source_job_id, checksum):
+        """复用未变化图片的特征并应用最新人工标签，源缓存不改动。"""
+        source = self.root/'candidates'/self.identifier(source_run_id)/(self.identifier(source_job_id)+'.json')
+        previous = json.loads(source.read_text())
+        if previous.get('content_sha256') and previous['content_sha256'] != checksum:
+            raise ValueError('缓存图片摘要不匹配')
+        vector = previous['embedding']
+        if len(vector) != 1152 or not np.isfinite(vector).all():
+            raise ValueError('缓存特征无效，需要重新提取')
+        directory = self.root/'candidates'/self.identifier(run_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        self.atomic_json(directory/(self.identifier(job_id)+'.json'),
+                         {'label': label, 'embedding': vector, 'content_sha256': checksum, 'reused': True})
+        return {'label': label, 'extracted': True, 'reused': True, 'content_sha256': checksum}
 
     def embedding(self, content):
-        """在内存解码110传来的图片，再调用SigLIP视觉编码器。"""
-        with Image.open(io.BytesIO(content)) as original:
-            if original.width * original.height > self.engine.config['max_image_pixels']:
-                raise ValueError('图片像素数量超出限制')
-            image = ImageOps.exif_transpose(original).convert('RGB')
+        """在内存适配超大图片尺寸，再调用SigLIP视觉编码器，不因像素数拒绝。"""
+        image = read_model_image(io.BytesIO(content), self.engine.config['max_image_pixels'])
         return self.engine.embed_image(image)
 
-    def finalize(self, run_id, expected):
-        """对本轮完整特征训练类别均衡逻辑回归，成功后才发布新模型。"""
+    def finalize(self, run_id, expected, job_ids=None):
+        """仅用110确认成功的最新标签特征训练分类器，异常样本不阻断有效样本。"""
         version = self.identifier(run_id)
         model_file = self.root / (version + '.json')
         if model_file.exists():
             metadata = json.loads(model_file.read_text())['metadata']
             self.atomic_json(self.root/'active.json', metadata)
             return metadata
-        records = [json.loads(path.read_text()) for path in sorted((self.root/'candidates'/version).glob('*.json'))]
+        directory = self.root/'candidates'/version
+        paths = [directory/(self.identifier(job)+'.json') for job in job_ids] if job_ids is not None else sorted(directory.glob('*.json'))
+        records = [json.loads(path.read_text()) for path in paths]
         if len(records) != expected or expected < 2:
             raise ValueError('学习样本未全部到齐，不能发布模型')
         labels = np.asarray([r['label'] == 'like' for r in records], dtype=np.float32)
@@ -127,21 +144,40 @@ def make_router(preference):
         return preference.status()
 
     @router.post('/finalize/{run_id}')
-    def finalize(run_id: str, expected: int):
-        """仅完整学习完成后拟合并发布候选模型，重复调用返回同版本。"""
+    def finalize(run_id: str, expected: int, job_ids: list[str] | None = Body(default=None)):
+        """按110成功样本清单拟合并发布模型，忽略未确认候选，重复调用返回同版本。"""
         if not preference.lock.acquire(blocking=False):
             raise HTTPException(429, 'AI正在计算')
         try:
-            return preference.finalize(run_id, expected)
+            return preference.finalize(run_id, expected, job_ids)
         except (ValueError, OSError) as exc:
             raise HTTPException(422, str(exc)) from exc
+        finally:
+            preference.lock.release()
+
+    @router.post('/reuse/{job_id}')
+    def reuse(job_id: str, run_id: str, label: str, source_run_id: str, source_job_id: str, content_sha256: str):
+        """接收110缓存复用请求，应用最新标签并回调，缓存缺失时允许110回退传图。"""
+        if label not in ('like', 'notlike'):
+            raise HTTPException(422, '标签无效')
+        if not preference.lock.acquire(blocking=False):
+            raise HTTPException(429, 'AI正在计算')
+        try:
+            result = preference.reuse(run_id, job_id, label, source_run_id, source_job_id, content_sha256)
+            return send_callback(job_id, run_id, result)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, '特征缓存缺失，请重新传图') from exc
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except (OSError, httpx.HTTPError) as exc:
+            raise HTTPException(503, str(exc)) from exc
         finally:
             preference.lock.release()
 
     @router.post('/jobs/{job_id}')
     async def job(job_id: str, request: Request, run_id: str, kind: str,
                   label: str = '', model_version: str = ''):
-        """接收一张二进制图片，在工作线程计算并回调，限制单次请求64MiB。"""
+        """接收一张二进制图片，在工作线程适配尺寸并计算回调，不按文件大小拒绝。"""
         try:
             preference.identifier(job_id)
             preference.identifier(run_id)
@@ -152,8 +188,6 @@ def make_router(preference):
         chunks = bytearray()
         async for chunk in request.stream():
             chunks.extend(chunk)
-            if len(chunks) > 64*1024*1024:
-                raise HTTPException(413, '图片超过64MiB')
         if not preference.lock.acquire(blocking=False):
             raise HTTPException(429, 'AI正在计算')
         try:
@@ -170,6 +204,10 @@ def make_router(preference):
     def execute(job_id, run_id, kind, label, model_version, content):
         """执行特征学习或评分，110确认回调成功后才结束本张请求。"""
         result = preference.sample(run_id, job_id, label, content) if kind == 'train' else preference.predict(model_version, content)
+        return send_callback(job_id, run_id, result)
+
+    def send_callback(job_id, run_id, result):
+        """将提取或复用结果交给110确认，成功后才结束派发。"""
         with httpx.Client(trust_env=False, timeout=30) as client:
             response = client.post(preference.callback_base + '/api/v1/image-preference/ai/callback',
                                    json={'job_id': job_id, 'run_id': run_id, 'result': result})

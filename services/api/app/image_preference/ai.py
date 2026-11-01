@@ -1,5 +1,6 @@
 """110持久化AI调度：串行派发、幂等回调、停止和断点重试。"""
 import json
+import hashlib
 import logging
 import os
 import threading
@@ -94,7 +95,12 @@ class Start(BaseModel):
 
 @router.post('/start', status_code=201)
 def start(body: Start):
-    """建立学习快照或持续筛选任务，先核对Mac就绪及两类人工样本。"""
+    """仅响应手动开始操作，按当前目录创建学习或筛选任务。"""
+    return start_run(body.kind)
+
+
+def start_run(kind, request_ids=None):
+    """由手动按钮或人工复核请求建立当前标签快照，不由目录变化自动触发。"""
     settings = config()
     try:
         with httpx.Client(trust_env=False, timeout=10) as client:
@@ -104,22 +110,26 @@ def start(body: Start):
             model = response.json()
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(503, 'Mac AI未就绪：'+str(exc)) from exc
-    if body.kind == 'screen' and not model.get('trained'):
+    if kind == 'screen' and not model.get('trained'):
         raise HTTPException(409, '请先完成一次喜欢/不喜欢学习')
     with control_lock() as (conn, cur):
-        cur.execute("SELECT id FROM image_ai_runs WHERE state IN ('running','stopping','finalizing') LIMIT 1")
+        cur.execute("SELECT id FROM image_ai_runs WHERE state IN ('running','stopping','finalizing')" if request_ids else "SELECT id FROM image_ai_runs WHERE state IN ('running','stopping','finalizing','paused_for_learning')")
         if cur.fetchone():
             raise HTTPException(409, '已有AI流程，请先停止当前流程')
         service.scan()
         roots = service.folder_config()
-        if body.kind == 'train':
+        if kind == 'train':
             counts = service.stats()
             if counts['good'] + counts['like'] == 0 or counts['notlike'] == 0:
                 raise HTTPException(409, '学习需要至少一张喜欢和一张不喜欢的人工样本')
-        run = {'id': str(uuid.uuid4()), 'kind': body.kind}
+        run = {'id': str(uuid.uuid4()), 'kind': kind}
         cur.execute("INSERT INTO image_ai_runs(id,kind,state,model_version) VALUES(%s,%s,'running',%s)",
-                    (run['id'], run['kind'], model.get('model_version') if body.kind == 'screen' else None))
+                    (run['id'], run['kind'], model.get('model_version') if kind == 'screen' else None))
         enqueue(cur, run, roots)
+        if request_ids:
+            placeholders=','.join(['%s']*len(request_ids))
+            cur.execute("UPDATE image_learning_requests SET state='running',run_id=%s,error=NULL WHERE state='pending' AND id IN ("+placeholders+")",(run['id'],)+tuple(request_ids))
+            audit(cur,service.SERVICE,'ai_run',run['id'],'review_learning_started',None,{'requests':request_ids})
         audit(cur, service.SERVICE, 'ai_run', run['id'], 'start', None, run)
         conn.commit()
     return run
@@ -127,26 +137,38 @@ def start(body: Start):
 
 @router.post('/stop')
 def stop():
-    """停止继续派发，已在计算的单张回调仍可完成，保留旧正式模型。"""
+    """停止当前计算及被复核学习暂停的筛选，并取消未执行复核请求，避免停止后重启。"""
     with control_lock() as (conn, cur):
-        cur.execute("SELECT * FROM image_ai_runs WHERE state IN ('running','stopping','finalizing') ORDER BY created_at DESC LIMIT 1")
-        run = cur.fetchone()
-        if not run:
-            return {'state': 'idle'}
-        set_state(cur, run['id'], 'stopping')
+        cur.execute("SELECT * FROM image_ai_runs WHERE state IN ('running','stopping','finalizing','paused_for_learning') ORDER BY created_at DESC")
+        runs=cur.fetchall()
+        cur.execute("UPDATE image_learning_requests SET state='cancelled',error='用户手动停止' WHERE state IN ('pending','running')")
+        cancelled=cur.rowcount
+        for run in runs:
+            set_state(cur,run['id'],'stopping')
+        audit(cur,service.SERVICE,'learning_requests','stop','cancel',None,{'cancelled':cancelled})
         conn.commit()
-    return {'id': run['id'], 'state': 'stopping'}
+    return {'id':runs[0]['id'],'state':'stopping'} if runs else {'state':'idle'}
 
 
 @router.get('/status')
 def status():
     """返回最近任务及准确逐张进度，网页轮询不触发AI计算。"""
     with connect() as conn, conn.cursor() as cur:
-        cur.execute('SELECT * FROM image_ai_runs ORDER BY created_at DESC LIMIT 1')
+        cur.execute("SELECT * FROM image_ai_runs ORDER BY (state IN ('running','stopping','finalizing','paused_for_learning')) DESC,updated_at DESC,created_at DESC LIMIT 1")
         run = cur.fetchone()
         cur.execute("SELECT kind,state,total,processed,failed,model_version,updated_at FROM image_ai_runs WHERE state='completed' AND kind='train' ORDER BY created_at DESC LIMIT 1")
         trained = cur.fetchone()
-    return {'run': run, 'last_training': trained}
+        if run:
+            cur.execute("SELECT COUNT(*) AS amount FROM image_ai_jobs WHERE run_id=%s AND state='completed' AND JSON_EXTRACT(result,'$.reused')=true",(run['id'],))
+            run['reused']=cur.fetchone()['amount']
+            run['extracted']=run['processed']-run['reused']
+            cur.execute("SELECT j.image_id,i.relative_path AS name,j.error FROM image_ai_jobs j LEFT JOIN image_items i ON i.id=j.image_id WHERE j.run_id=%s AND j.state='failed' ORDER BY j.updated_at DESC LIMIT 20",(run['id'],))
+            run['warnings']=cur.fetchall()
+        cur.execute("SELECT state,COUNT(*) AS amount FROM image_learning_requests WHERE state IN ('pending','running') GROUP BY state")
+        feedback={row['state']:row['amount'] for row in cur.fetchall()}
+        cur.execute("SELECT id,state,model_version FROM image_ai_runs WHERE kind='screen' AND state IN ('running','paused_for_learning','stopping') ORDER BY created_at DESC LIMIT 1")
+        screening=cur.fetchone()
+    return {'run': run, 'last_training': trained, 'review_learning': feedback, 'screening': screening}
 
 
 class Callback(BaseModel):
@@ -188,7 +210,7 @@ def callback(body: Callback):
         elif result.get('label') != job['label'] or result.get('extracted') is not True:
             raise HTTPException(422, '学习标签或特征确认不匹配')
         cur.execute("UPDATE image_ai_jobs SET state='completed',result=%s,error=NULL WHERE id=%s", (json.dumps(result), body.job_id))
-        cur.execute('UPDATE image_ai_runs SET processed=processed+1 WHERE id=%s', (body.run_id,))
+        cur.execute('UPDATE image_ai_runs SET processed=processed+1,error=NULL WHERE id=%s', (body.run_id,))
         audit(cur, service.SERVICE, 'ai_job', body.job_id, 'completed', None, result)
         conn.commit()
     return {'accepted': True, 'already_applied': False}
@@ -230,47 +252,96 @@ def next_job():
             conn.commit()
             return run, job
         if run['kind'] == 'train':
-            if run['failed']:
-                set_state(cur, run['id'], 'failed', '部分图片学习失败，未替换旧模型；修复后重新启动学习')
-                conn.commit()
-                return None, None
             set_state(cur, run['id'], 'finalizing')
             conn.commit()
         return run, None
 
 
+class RetryLater(RuntimeError):
+    """服务暂不可用时保留当前图片待处理，不计为图片失败。"""
+
+
+def check_response(response):
+    """区分Mac暂不可用和图片处理错误，网络波动不会耗尽图片重试次数。"""
+    if response.status_code == 429 or response.status_code >= 500:
+        raise RetryLater('Mac暂不可用，等待自动重试：'+response.text[:300])
+    if response.is_error:
+        raise RuntimeError('Mac响应 '+str(response.status_code)+': '+response.text[:500])
+
+
+def cached_feature(job, checksum):
+    """按图片摘要及身份寻找历史成功特征，兼容首轮尚未记录摘要的缓存。"""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT j.* FROM image_ai_jobs j JOIN image_ai_runs r ON r.id=j.run_id WHERE j.image_id=%s AND j.state='completed' AND r.kind='train' AND j.run_id<>%s ORDER BY j.updated_at DESC LIMIT 30",(job['image_id'],job['run_id']))
+        for previous in cur.fetchall():
+            result=json.loads(previous['result']) if isinstance(previous['result'],str) else previous['result'] or {}
+            digest=result.get('content_sha256')
+            if digest == checksum or (not digest and previous['size_bytes']==job['size_bytes'] and previous['mtime_ns']==job['mtime_ns']):
+                return previous
+        cur.execute("SELECT j.* FROM image_ai_jobs j JOIN image_ai_runs r ON r.id=j.run_id WHERE j.state='completed' AND r.kind='train' AND j.run_id<>%s AND JSON_UNQUOTE(JSON_EXTRACT(j.result,'$.content_sha256'))=%s ORDER BY j.updated_at DESC LIMIT 1",(job['run_id'],checksum))
+        return cur.fetchone()
+
+
 def dispatch(run, job):
-    """流式发送原图给Mac，由Mac回调确认后才处理下一张。"""
+    """核对当前原图，未变图片优先复用特征，新增或修改图片才传给Mac重新提取。"""
     settings = config()
     path = service.image_path(job['image_id'])
     stat = path.stat()
     if stat.st_size != job['size_bytes'] or stat.st_mtime_ns != job['mtime_ns']:
-        raise ValueError('图片已改变，请重新启动流程')
-    if stat.st_size > 64*1024*1024:
-        raise ValueError('图片超过64MiB')
+        raise ValueError('图片在本轮处理中发生变化，保留到下一轮重新检查')
     params = {'run_id': run['id'], 'kind': run['kind'], 'label': job['label'], 'model_version': run['model_version'] or ''}
-    with path.open('rb') as stream, httpx.Client(trust_env=False, timeout=180) as client:
-        response = client.post(settings['mac_url']+'/api/v1/preference/jobs/'+job['id'], params=params,
-                               content=stream, headers={'Content-Type': 'application/octet-stream'})
-        if response.is_error:
-            raise RuntimeError('Mac响应 '+str(response.status_code)+': '+response.text[:500])
+    previous=None
+    if run['kind']=='train':
+        digest=hashlib.sha256()
+        with path.open('rb') as stream:
+            for chunk in iter(lambda:stream.read(1024*1024),b''):digest.update(chunk)
+        checksum=digest.hexdigest()
+        previous=cached_feature(job,checksum)
+    with httpx.Client(trust_env=False, timeout=180) as client:
+        reused=False
+        if previous:
+            response=client.post(settings['mac_url']+'/api/v1/preference/reuse/'+job['id'],params={
+                'run_id':run['id'],'label':job['label'],'source_run_id':previous['run_id'],
+                'source_job_id':previous['id'],'content_sha256':checksum})
+            if response.status_code not in (404,409,422):
+                check_response(response)
+                reused=True
+        if not reused:
+            with path.open('rb') as stream:
+                response = client.post(settings['mac_url']+'/api/v1/preference/jobs/'+job['id'], params=params,
+                                       content=stream, headers={'Content-Type': 'application/octet-stream'})
+                check_response(response)
     with connect() as conn, conn.cursor() as cur:
         cur.execute('SELECT state FROM image_ai_jobs WHERE id=%s', (job['id'],))
         if cur.fetchone()['state'] != 'completed':
-            raise RuntimeError('Mac未完成110回调确认')
+            raise RetryLater('Mac未完成110回调确认，等待同编号重试')
+
+
+def defer_job(job, error):
+    """服务离线或繁忙时暂停本张并保持重试额度，不将网络故障归为图片失败。"""
+    with control_lock() as (conn,cur):
+        cur.execute("UPDATE image_ai_jobs SET state='pending',attempts=GREATEST(attempts-1,0),error=%s WHERE id=%s AND state='processing'",(error,job['id']))
+        if cur.rowcount:
+            cur.execute('UPDATE image_ai_runs SET error=%s WHERE id=%s',(error,job['run_id']))
+            audit(cur,service.SERVICE,'ai_job',job['id'],'waiting_for_mac',None,{'error':error})
+        conn.commit()
 
 
 def finish_or_refill(run):
-    """学习完整后发布模型，筛选队列空时重新扫描补充新增图片。"""
+    """用本轮成功特征发布模型，异常仅作警告；筛选空队列时补充新增图片。"""
     if run['kind'] == 'train':
         try:
+            with connect() as conn, conn.cursor() as cur:
+                cur.execute("SELECT id FROM image_ai_jobs WHERE run_id=%s AND state='completed' ORDER BY id", (run['id'],))
+                successful = [row['id'] for row in cur.fetchall()]
             with httpx.Client(trust_env=False, timeout=180) as client:
-                response = client.post(config()['mac_url']+'/api/v1/preference/finalize/'+run['id'], params={'expected': run['total']})
+                response = client.post(config()['mac_url']+'/api/v1/preference/finalize/'+run['id'], params={'expected': len(successful)}, json=successful)
                 response.raise_for_status()
                 model = response.json()
             with control_lock() as (conn, cur):
                 cur.execute('UPDATE image_ai_runs SET model_version=%s WHERE id=%s', (model['model_version'], run['id']))
-                set_state(cur, run['id'], 'completed')
+                warning = f"训练已完成；{run['failed']}张处理异常保留待重试，已成功样本均已用于训练" if run['failed'] else None
+                set_state(cur, run['id'], 'completed', warning)
                 audit(cur, service.SERVICE, 'ai_model', model['model_version'], 'published', None, model)
                 conn.commit()
         except Exception as exc:
@@ -278,7 +349,7 @@ def finish_or_refill(run):
             with control_lock() as (conn, cur):
                 cur.execute('SELECT state FROM image_ai_runs WHERE id=%s', (run['id'],))
                 current_state = cur.fetchone()['state']
-                target = 'stopped' if current_state == 'stopping' else 'failed' if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 422 else 'finalizing'
+                target = 'stopped' if current_state == 'stopping' else 'needs_samples' if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 422 else 'finalizing'
                 set_state(cur, run['id'], target, str(exc)[:1000])
                 conn.commit()
     else:
@@ -288,6 +359,48 @@ def finish_or_refill(run):
             if cur.fetchone()['state'] == 'running':
                 enqueue(cur, run, service.folder_config())
                 conn.commit()
+
+
+def review_learning():
+    """只消费人工复核产生的请求，合并连续复核，先更新模型再恢复后续筛选。"""
+    with control_lock() as (conn,cur):
+        cur.execute("SELECT q.id,q.run_id,r.state,r.model_version,r.error FROM image_learning_requests q JOIN image_ai_runs r ON r.id=q.run_id WHERE q.state='running' AND r.state NOT IN ('running','stopping','finalizing')")
+        for request in cur.fetchall():
+            state='completed' if request['state']=='completed' else 'needs_attention'
+            cur.execute('UPDATE image_learning_requests SET state=%s,error=%s WHERE id=%s',(state,request['error'],request['id']))
+            audit(cur,service.SERVICE,'learning_request',request['id'],state,None,{'run_id':request['run_id']})
+        cur.execute("SELECT id FROM image_ai_runs WHERE kind='train' AND state IN ('running','stopping','finalizing') LIMIT 1")
+        if cur.fetchone():
+            conn.commit()
+            return
+        cur.execute("SELECT id FROM image_learning_requests WHERE state='pending' ORDER BY created_at LIMIT 1000")
+        requests=[row['id'] for row in cur.fetchall()]
+        cur.execute("SELECT * FROM image_ai_runs WHERE kind='screen' AND state='paused_for_learning'")
+        paused=cur.fetchall()
+        if not requests:
+            cur.execute("SELECT model_version FROM image_ai_runs WHERE kind='train' AND state='completed' ORDER BY created_at DESC LIMIT 1")
+            latest=cur.fetchone()
+            for screen in paused:
+                version=latest['model_version'] if latest else screen['model_version']
+                cur.execute('UPDATE image_ai_runs SET model_version=%s WHERE id=%s',(version,screen['id']))
+                set_state(cur,screen['id'],'running')
+            conn.commit()
+            return
+        cur.execute("SELECT id FROM image_ai_runs WHERE kind='screen' AND state='stopping' LIMIT 1")
+        if cur.fetchone():
+            conn.commit()
+            return
+        cur.execute("SELECT id FROM image_ai_runs WHERE kind='screen' AND state='running'")
+        for screen in cur.fetchall():
+            set_state(cur,screen['id'],'paused_for_learning','人工复核触发增量学习，完成后从下一张使用更新模型')
+        conn.commit()
+    try:
+        start_run('train', requests)
+    except Exception as exc:
+        with control_lock() as (conn,cur):
+            placeholders=','.join(['%s']*len(requests))
+            cur.execute("UPDATE image_learning_requests SET error=%s WHERE state='pending' AND id IN ("+placeholders+")",(str(exc)[:1000],)+tuple(requests))
+            conn.commit()
 
 
 def worker_loop(stop_event):
@@ -300,10 +413,14 @@ def worker_loop(stop_event):
                     stop_event.wait(2)
                     continue
                 try:
+                    review_learning()
                     run, job = next_job()
                     if job:
                         try:
                             dispatch(run, job)
+                        except (httpx.RequestError, RetryLater) as exc:
+                            defer_job(job, str(exc)[:1000])
+                            stop_event.wait(5)
                         except Exception as exc:
                             fail_job(job, str(exc)[:1000])
                             stop_event.wait(3)

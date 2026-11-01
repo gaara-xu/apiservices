@@ -74,3 +74,17 @@ image_items维护索引，image_moves记录移动意图及结果，audit_events�
 ## 0.3.1 模型状态
 
 `GET /api/v1/image-preference/ai/model-status`：110实时直连Mac的模型状态接口，3秒超时，禁用环境代理。返回state（ready/loading/offline/error/unconfigured）、online；就绪时还含device及personal_preference_trained。探测失败也返回200状态对象供指示灯显示，不触发训练。网页独立每5秒刷新：绿灯已就绪，黄灯加载中/未配置，红灯离线/异常；110接口本身无法访问时显示灰灯“状态获取失败”，不继续保留旧绿灯。喜好模型是否已训练另以文字注明。
+
+## 0.3.2 输入适配
+
+110与Mac不再按64MiB拒绝输入；Mac自动对超大图片降采样后提取特征，原始文件保持不变。本轮只补提失败特征时状态为stopped，error字段说明“特征提取已完成，尚未执行个人分类器训练”，不要据processed==total推断模型已发布。
+
+## 0.4.0 增量复用与人工复核触发（取代先前全量重提及单图失败阻断规则）
+
+`POST /ai/start {"kind":"train"}`重新核对当前目录，复用未变特征，用最新标签拟合分类器。只有手动调用开始学习或AI复核确认会发起学习；scan、status、文件变化都不会触发。
+
+AI复核`POST /images/{id}/decision`完成移动时原子新增image_learning_requests；重复提交不会重复登记。学习进行时新复核合并为后续批次。筛选在当前单张结束后进入paused_for_learning；学习完成后恢复，并从下一张使用新模型。
+
+`GET /ai/status`新增run.reused、run.extracted、run.warnings（最多20条明细）、review_learning（pending/running数量）、screening。优先返回活动任务，否则返回最近更新任务。processed仅成功数，failed是待重试异常数，两者之和为当前已处理数。存在异常时仍可completed并附warning；有效两类样本不足时needs_samples。
+
+`POST /ai/stop`同时停止当前任务与临时暂停的筛选，取消待执行复核请求，防止停止后自动重启。Mac网络/服务故障等待重试，不计图片失败。

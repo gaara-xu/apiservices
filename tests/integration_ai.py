@@ -1,5 +1,6 @@
 """真实MySQL及隔离图片目录验证AI调度与人工复核，不调用真实模型。"""
 import json
+import hashlib
 import tempfile
 import uuid
 from pathlib import Path
@@ -14,6 +15,7 @@ from app.image_preference import service, ai
 class FakeResponse:
     """提供Mac接口正常返回的最小协议。"""
     is_error = False
+    status_code = 200
     def __init__(self, data):
         """保存响应内容供调度器读取。"""
         self.data = data
@@ -43,15 +45,21 @@ class FakeMac:
     def get(self, url):
         """报告基础模型就绪和个人分类器是否发布。"""
         return FakeResponse({'trained': self.trained, 'model_version': self.model_version})
-    def post(self, url, params, content=None, headers=None):
+    def post(self, url, params, content=None, headers=None, json=None):
         """接收原图流并按任务类型返回回调，模型发布返回固定任务版本。"""
         if '/finalize/' in url:
             FakeMac.trained = True
             FakeMac.model_version = url.rsplit('/',1)[-1]
             return FakeResponse({'model_version': self.model_version})
-        assert content.read(2) == b'\xff\xd8', '必须传输真实图片字节'
+        if '/reuse/' not in url:
+            raw=content.read()
+            assert raw[:2] == b'\xff\xd8', '必须传输真实图片字节'
         job = url.rsplit('/',1)[-1]
-        result = {'label': params['label'], 'extracted': True} if params['kind']=='train' else {'label':'like','score':0.8,'model_version':params['model_version']}
+        result = {'label': params['label'], 'extracted': True} if params.get('kind','train')=='train' else {'label':'like','score':0.8,'model_version':params['model_version']}
+        if '/reuse/' in url:
+            result.update(reused=True,content_sha256=params['content_sha256'])
+        elif params.get('kind')=='train':
+            result.update(reused=False,content_sha256=hashlib.sha256(raw).hexdigest())
         FakeMac.callback_body = {'job_id':job,'run_id':params['run_id'],'result':result}
         response = self.client.post('/api/v1/image-preference/ai/callback',json=self.callback_body)
         assert response.status_code==200,response.text
@@ -95,6 +103,27 @@ def verify():
                     assert client.post(prefix+'/ai/callback',json=FakeMac.callback_body).json()['already_applied'] is True
                     assert client.post(prefix+'/images/'+image['id']+'/decision',json={'decision':'notlike'}).status_code==200
                     assert client.get(prefix+'/next?source=ai').json()['image'] is None
+                    # 人工复核只生成一次学习请求，暂停筛选后复用已有特征更新模型。
+                    duplicate=client.post(prefix+'/images/'+image['id']+'/decision',json={'decision':'notlike'})
+                    assert duplicate.json()['already_applied'] is True
+                    with connect() as conn,conn.cursor() as cur:
+                        cur.execute('SELECT COUNT(*) AS n FROM image_learning_requests WHERE image_id=%s',(image['id'],))
+                        assert cur.fetchone()['n']==1
+                    ai.review_learning()
+                    status=client.get(prefix+'/ai/status').json()
+                    assert status['run']['kind']=='train' and status['screening']['state']=='paused_for_learning',status
+                    feedback_run=status['run']['id'];run_ids.append(feedback_run)
+                    for _ in range(10):
+                        run,job=ai.next_job()
+                        if not job:
+                            ai.finish_or_refill(run)
+                            break
+                        ai.dispatch(run,job)
+                    ai.review_learning()
+                    status=client.get(prefix+'/ai/status').json()
+                    assert status['run']['kind']=='screen' and status['run']['state']=='running',status
+                    assert status['run']['model_version']==feedback_run
+                    assert not status['review_learning']
                     # 第二张在计算期间人工先行分类，AI回调不得覆盖人工结果。
                     run,job=ai.next_job()
                     response=client.post(prefix+'/images/'+job['image_id']+'/decision',json={'decision':'like'})
@@ -125,6 +154,7 @@ def verify():
                     cur.execute('DELETE FROM image_ai_jobs WHERE run_id=%s',(run_id,))
                     cur.execute('DELETE FROM image_ai_runs WHERE id=%s',(run_id,))
                 placeholders=','.join(['%s']*len(roots));values=tuple(str(p) for p in roots.values())
+                cur.execute('DELETE image_learning_requests FROM image_learning_requests JOIN image_items ON image_learning_requests.image_id=image_items.id WHERE image_items.root_path IN ('+placeholders+')',values)
                 cur.execute('DELETE image_moves FROM image_moves JOIN image_items ON image_moves.image_id=image_items.id WHERE image_items.root_path IN ('+placeholders+')',values)
                 cur.execute('DELETE FROM image_items WHERE root_path IN ('+placeholders+')',values)
                 audit(cur,service.SERVICE,'verification',str(uuid.uuid4()),'cleanup',None,{'test_runs':run_ids,'temporary_roots':list(values)})
@@ -137,7 +167,7 @@ def main():
         cur.execute("SELECT GET_LOCK('apiserver_ai_worker',10) AS acquired")
         assert cur.fetchone()['acquired']==1,'无法暂停后台工作者，取消测试'
         try:
-            cur.execute("SELECT COUNT(*) AS amount FROM image_ai_runs WHERE state IN ('running','stopping','finalizing')")
+            cur.execute("SELECT COUNT(*) AS amount FROM image_ai_runs WHERE state IN ('running','stopping','finalizing','paused_for_learning')")
             assert cur.fetchone()['amount']==0,'已有用户AI任务，取消测试'
             verify()
         finally:

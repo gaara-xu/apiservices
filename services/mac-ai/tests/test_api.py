@@ -54,7 +54,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/v1/images/embeddings', json={'paths':['/a.jpg']}).status_code, 422)
 
     def test_paths_and_pixels(self):
-        """验证图片读取、目录范围、批量限制、缺失及超像素文件。"""
+        """验证路径及批量限制，并确认超过适配阈值的图片仍可读取。"""
         with tempfile.TemporaryDirectory(dir=SERVICE_DIR/'runtime') as temporary:
             root = Path(temporary)
             path = root/'sample.png'
@@ -65,8 +65,7 @@ class ApiTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     engine.read_images(paths)
             engine.config['max_image_pixels'] = 100
-            with self.assertRaises(ValueError):
-                engine.read_images([str(path)])
+            self.assertEqual(engine.read_images([str(path)])[0].size, (16,16))
 
 
 if __name__ == '__main__':

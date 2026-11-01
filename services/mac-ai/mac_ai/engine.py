@@ -1,7 +1,8 @@
 """SigLIP 2离线特征提取和候选标签分类。"""
 import threading
 from pathlib import Path
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import UnidentifiedImageError
+from .images import read_model_image
 
 
 class Engine:
@@ -41,7 +42,7 @@ class Engine:
             self.state = 'error'
 
     def read_images(self, paths):
-        """验证共享路径并读取图片，按EXIF方向修正，拒绝超大或损坏文件。"""
+        """验证共享路径并读取图片，自动适配超大图片并修正EXIF，损坏文件报告原因。"""
         if not 1 <= len(paths) <= self.config['max_batch_size']:
             raise ValueError('图片数量超出批量限制')
         roots = [Path(root).resolve() for root in self.config['allowed_image_roots']]
@@ -56,11 +57,8 @@ class Engine:
             if not path.is_file():
                 raise ValueError('图片不存在或共享目录未挂载：' + raw)
             try:
-                with Image.open(path) as original:
-                    if original.width * original.height > self.config['max_image_pixels']:
-                        raise ValueError('图片像素数量超出限制：' + raw)
-                    images.append(ImageOps.exif_transpose(original).convert('RGB'))
-            except (OSError, UnidentifiedImageError, Image.DecompressionBombError) as exc:
+                images.append(read_model_image(path, self.config['max_image_pixels']))
+            except (OSError, UnidentifiedImageError) as exc:
                 raise ValueError('图片无法读取：' + raw) from exc
         return images
 

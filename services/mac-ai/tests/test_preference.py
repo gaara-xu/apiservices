@@ -35,5 +35,24 @@ class PreferenceTests(unittest.TestCase):
             self.assertEqual(preference.status()['model_version'],run)
             with self.assertRaises(ValueError): preference.identifier('../outside')
 
+    def test_reuse_latest_label_and_success_manifest(self):
+        """缓存不重复编码，改标签使用最新值，未确认候选不影响有效样本训练。"""
+        with tempfile.TemporaryDirectory(dir=SERVICE_DIR/'runtime') as temporary:
+            preference=Preference(Mock(),temporary,'http://test')
+            preference.embedding=Mock(return_value=[1.0]+[0.0]*1151)
+            source_run,source_job,run,job=[str(uuid.uuid4()) for _ in range(4)]
+            original=preference.sample(source_run,source_job,'like',b'picture')
+            result=preference.reuse(run,job,'notlike',source_run,source_job,original['content_sha256'])
+            self.assertEqual(result['label'],'notlike')
+            self.assertTrue(result['reused'])
+            self.assertEqual(preference.embedding.call_count,1)
+            positive=str(uuid.uuid4())
+            preference.sample(run,positive,'like',b'positive')
+            preference.sample(run,str(uuid.uuid4()),'like',b'unconfirmed')
+            metadata=preference.finalize(run,2,[job,positive])
+            self.assertEqual((metadata['samples'],metadata['positive'],metadata['negative']),(2,1,1))
+            with self.assertRaises(ValueError):
+                preference.reuse(run,str(uuid.uuid4()),'like',source_run,source_job,'wrong_digest')
+
 
 if __name__ == '__main__': unittest.main()

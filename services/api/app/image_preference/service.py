@@ -45,7 +45,7 @@ def locked_connection():
 
 
 def finalize_move(conn, operation):
-    """文件操作完成后，原子更新图片归属、移动日志和业务审计。"""
+    """文件移动完成后原子记录归属及审计，人工AI复核同时登记一次增量学习请求。"""
     with conn.cursor() as cur:
         cur.execute('SELECT * FROM image_items WHERE id=%s', (operation['image_id'],))
         before = cur.fetchone()
@@ -55,6 +55,12 @@ def finalize_move(conn, operation):
         cur.execute("UPDATE image_moves SET state='completed',completed_at=CURRENT_TIMESTAMP,error=NULL WHERE id=%s", (operation['id'],))
         audit(cur, SERVICE, 'image', operation['image_id'], 'move_completed', before,
               {'decision': operation['decision'], 'destination': operation['destination_path'], 'operation_id': operation['id']})
+        if before['folder'] in ('ai_like','ai_notlike') and operation['decision'] in ('like','notlike'):
+            cur.execute('INSERT IGNORE INTO image_learning_requests(id,image_id,label) VALUES(%s,%s,%s)',
+                        (operation['id'],operation['image_id'],operation['decision']))
+            if cur.rowcount:
+                audit(cur,SERVICE,'learning_request',operation['id'],'human_review',None,
+                      {'image_id':operation['image_id'],'label':operation['decision']})
         conn.commit()
 
 

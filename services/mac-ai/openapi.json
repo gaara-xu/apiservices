@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Mac AI 图像识别接口",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "paths": {
     "/api/v1/preference/status": {
@@ -31,7 +31,7 @@
           "个人喜好"
         ],
         "summary": "Finalize",
-        "description": "仅完整学习完成后拟合并发布候选模型，重复调用返回同版本。",
+        "description": "按110成功样本清单拟合并发布模型，忽略未确认候选，重复调用返回同版本。",
         "operationId": "finalize_api_v1_preference_finalize__run_id__post",
         "parameters": [
           {
@@ -50,6 +50,112 @@
             "schema": {
               "type": "integer",
               "title": "Expected"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Job Ids"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/preference/reuse/{job_id}": {
+      "post": {
+        "tags": [
+          "个人喜好"
+        ],
+        "summary": "Reuse",
+        "description": "接收110缓存复用请求，应用最新标签并回调，缓存缺失时允许110回退传图。",
+        "operationId": "reuse_api_v1_preference_reuse__job_id__post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "label",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Label"
+            }
+          },
+          {
+            "name": "source_run_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Run Id"
+            }
+          },
+          {
+            "name": "source_job_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Job Id"
+            }
+          },
+          {
+            "name": "content_sha256",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Content Sha256"
             }
           }
         ],
@@ -81,7 +187,7 @@
           "个人喜好"
         ],
         "summary": "Job",
-        "description": "接收一张二进制图片，在工作线程计算并回调，限制单次请求64MiB。",
+        "description": "接收一张二进制图片，在工作线程适配尺寸并计算回调，不按文件大小拒绝。",
         "operationId": "job_api_v1_preference_jobs__job_id__post",
         "parameters": [
           {

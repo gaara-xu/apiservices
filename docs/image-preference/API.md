@@ -70,3 +70,7 @@ image_items维护索引，image_moves记录移动意图及结果，audit_events�
 任务状态：running、stopping、stopped、finalizing、completed、failed。学习进度processed仅在Mac回调被确认后增加；finalizing表示正在拟合轻量分类器，不再传图。筛选不会因当前队列空而自动completed，而是等待新图片；total随新图片增加。
 
 配置通过既有`PUT /api/v1/services/image-preference/settings/ai`写入`{"value":{"mac_url":"http://192.168.3.62:8111","callback_base":"http://192.168.3.110:8110"}}`，会记录审计。Mac回调实际地址在Mac服务config.json的callback_base配置；修改地址须两边同步。Mac IP变动后更新mac_url。正式Docker设置AI_WORKER_ENABLED=1，预检容器=0。
+
+## 0.3.1 模型状态
+
+`GET /api/v1/image-preference/ai/model-status`：110实时直连Mac的模型状态接口，3秒超时，禁用环境代理。返回state（ready/loading/offline/error/unconfigured）、online；就绪时还含device及personal_preference_trained。探测失败也返回200状态对象供指示灯显示，不触发训练。网页独立每5秒刷新：绿灯已就绪，黄灯加载中/未配置，红灯离线/异常；110接口本身无法访问时显示灰灯“状态获取失败”，不继续保留旧绿灯。喜好模型是否已训练另以文字注明。

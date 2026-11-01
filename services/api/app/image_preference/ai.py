@@ -30,6 +30,29 @@ def config():
     return value
 
 
+@router.get('/model-status')
+async def model_status():
+    """由110直连探测Mac模型状态，区分未配置、离线、加载中、错误与就绪。"""
+    try:
+        settings = config()
+    except HTTPException as exc:
+        return {'state': 'unconfigured', 'online': False, 'detail': str(exc.detail)}
+    try:
+        async with httpx.AsyncClient(trust_env=False, timeout=3) as client:
+            response = await client.get(settings['mac_url'].rstrip('/') + '/api/v1/model')
+            response.raise_for_status()
+            data = response.json()
+        if data.get('state') not in ('ready', 'loading', 'error'):
+            raise ValueError('Mac返回的模型状态无法识别')
+        return {'state': data['state'], 'online': True, 'device': data.get('device'),
+                'model': data.get('model'), 'personal_preference_trained': data.get('personal_preference_trained', False),
+                'detail': data.get('error')}
+    except httpx.RequestError:
+        return {'state': 'offline', 'online': False, 'detail': '无法连接Mac AI，请确认Mac服务已启动及内网连接正常'}
+    except (httpx.HTTPStatusError, ValueError, TypeError, AttributeError):
+        return {'state': 'error', 'online': True, 'detail': 'Mac模型状态接口异常'}
+
+
 @contextmanager
 def control_lock():
     """串行化启动、停止和回调，确保同一时刻只有一项用户AI流程。"""

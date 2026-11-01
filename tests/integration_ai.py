@@ -99,10 +99,13 @@ def verify():
                     response=client.post(prefix+'/ai/start',json={'kind':'screen'});assert response.status_code==201,response.text
                     run_ids.append(response.json()['id'])
                     run,job=take_next();ai.dispatch(run,job)
-                    image=client.get(prefix+'/next?source=ai_like').json()['image'];assert image
+                    review=client.get(prefix+'/next?source=ai_like').json();image=review['image'];assert image
+                    assert review['review_progress']=={'completed':0,'remaining':1,'total':1,'position':1},review
+                    assert image['size_bytes']>0
                     assert client.post(prefix+'/ai/callback',json=FakeMac.callback_body).json()['already_applied'] is True
                     assert client.post(prefix+'/images/'+image['id']+'/decision',json={'decision':'notlike'}).status_code==200
-                    assert client.get(prefix+'/next?source=ai').json()['image'] is None
+                    review=client.get(prefix+'/next?source=ai').json()
+                    assert review['image'] is None and review['review_progress']=={'completed':1,'remaining':0,'total':1,'position':1},review
                     # 人工复核只生成一次学习请求，暂停筛选后复用已有特征更新模型。
                     duplicate=client.post(prefix+'/images/'+image['id']+'/decision',json={'decision':'notlike'})
                     assert duplicate.json()['already_applied'] is True

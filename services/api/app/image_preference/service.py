@@ -128,10 +128,26 @@ def stats():
 
 
 def public_item(row):
-    """返回用于页面展示和调用的图片标识，隐藏服务器绝对路径。"""
-    return {'id':row['id'], 'name':row['relative_path'], 'state':row['state'],
+    """返回图片标识及原始文件字节数，供页面显示文件大小。"""
+    return {'id':row['id'], 'name':row['relative_path'], 'state':row['state'], 'size_bytes':row['size_bytes'],
             'preview_url':f"/api/v1/image-preference/images/{row['id']}/preview",
             'content_url':f"/api/v1/image-preference/images/{row['id']}/content"}
+
+
+def review_progress(cur, roots, source, has_image):
+    """按当前AI复核目录统计已完成与待处理数量，刷新页面后进度仍然保留。"""
+    if source=='all':return None
+    keys=['ai_like','ai_notlike'] if source=='ai' else [source]
+    clauses=' OR '.join('(folder=%s AND root_path=%s AND state=%s)' for _ in keys)
+    params=tuple(value for key in keys for value in (key,str(roots[key]),STATES[key]))
+    cur.execute('SELECT COUNT(*) AS amount FROM image_items WHERE '+clauses,params)
+    remaining=cur.fetchone()['amount']
+    sources=' OR '.join("LEFT(source_path,CHAR_LENGTH(%s)+1)=CONCAT(%s,'/')" for _ in keys)
+    params=tuple(value for key in keys for value in (str(roots[key]),str(roots[key])))
+    cur.execute("SELECT COUNT(*) AS amount FROM image_moves WHERE state='completed' AND decision IN ('like','notlike') AND ("+sources+")",params)
+    completed=cur.fetchone()['amount']
+    return {'completed':completed,'remaining':remaining,'total':completed+remaining,
+            'position':completed+1 if has_image else completed}
 
 
 def next_image(source="all"):
@@ -147,9 +163,9 @@ def next_image(source="all"):
                 cur.execute('SELECT * FROM image_items WHERE (' + clauses + ') ORDER BY created_at,id LIMIT 1', params)
                 row = cur.fetchone()
                 if not row:
-                    return {'image':None}
+                    return {'image':None,'review_progress':review_progress(cur,roots,source,False)}
                 if safe_path(roots[row['folder']], row['relative_path']).is_file():
-                    return {'image':public_item(row)}
+                    return {'image':public_item(row),'review_progress':review_progress(cur,roots,source,True)}
                 cur.execute("UPDATE image_items SET state='missing' WHERE id=%s", (row['id'],))
                 audit(cur, SERVICE, 'image', row['id'], 'missing', row, {'state':'missing'})
                 conn.commit()

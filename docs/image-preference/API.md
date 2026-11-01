@@ -94,3 +94,9 @@ AI复核`POST /images/{id}/decision`完成移动时原子新增image_learning_re
 `GET /ai/status`的run新增plan_ready、input_plan（new/changed/reuse各自的total、completed、failed）。派发前完成输入检查；检查过程中plan_ready=false，前端显示“正在核对新增图片”，不使用全部人工样本作为进度分母。只有本页面手动点击开始学习后才显示本轮新增进度条，复核学习、历史任务及页面刷新不显示，任务结束后隐藏。修改图片另列，不混入新增分母。
 
 目录统计：当前人工样本总数=good+like+notlike，喜欢=good+like，不喜欢=notlike。训练模型的历史样本数是上一轮快照，与当前目录新增后的总数分开。例如首轮403=363喜欢+40不喜欢，随后目录413=363喜欢+50不喜欢。
+
+## 0.4.2 复核图片进度和文件大小
+
+`GET /next?source=ai_like|ai_notlike|ai`增加review_progress，含completed、remaining、total、position。position为当前图片序号（已复核+1），没有下一张时等于已完成数。总数为当前来源累计已复核+当前待复核，AI加入新图时总数增加；刷新页面保留累计进度。source=all返回review_progress=null。
+
+图片对象增加size_bytes，网页在图片下方显示原图大小，MB按1,000,000字节换算、两位小数，不使用预览图大小。不修改数据库结构。

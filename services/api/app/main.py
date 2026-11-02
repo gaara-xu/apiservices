@@ -21,7 +21,7 @@ async def lifespan(app):
     event.set()
 
 
-app = FastAPI(title='apiserver', version=os.getenv('APP_VERSION', '0.5.1'), lifespan=lifespan, docs_url=None, redoc_url=None)
+app = FastAPI(title='apiserver', version=os.getenv('APP_VERSION', '0.5.2'), lifespan=lifespan, docs_url=None, redoc_url=None)
 app.include_router(image_router)
 app.include_router(ai_router)
 

@@ -12,6 +12,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from mac_ai.registration import register_address
 from mac_ai.settings import SERVICE_DIR, prepare_environment, load_settings
 
 prepare_environment()
@@ -46,10 +47,11 @@ def owned_state():
 
 
 def start():
-    """启动独立后台服务，允许复用刚关闭的端口并等待模型就绪。"""
+    """启动独立后台服务，等待模型就绪后登记当前局域网地址，重复启动也同步地址。"""
     state = owned_state()
     if state:
         print('服务已运行，PID：' + str(state['pid']))
+        print('110地址已同步：' + register_address(load_settings()))
         return
     config = load_settings()
     port = int(config['port'])
@@ -71,8 +73,7 @@ def start():
             raise RuntimeError('服务启动失败，请查看日志')
         try:
             status = request(port, '/health/ready')
-            print(f"服务就绪：http://127.0.0.1:{port}，计算设备：{status['device']}")
-            return
+            break
         except urllib.error.HTTPError:
             info = request(port, '/api/v1/model')
             if info['state'] == 'error':
@@ -80,7 +81,12 @@ def start():
         except OSError:
             pass
         time.sleep(1)
-    raise RuntimeError('等待加载超时，进程保留；请查看日志或运行关闭.command')
+    else:
+        raise RuntimeError('等待加载超时，进程保留；请查看日志或运行关闭.command')
+    try:
+        print('服务就绪，110地址已同步：' + register_address(config))
+    except Exception as exc:
+        raise RuntimeError('Mac服务已运行，但110地址登记失败；恢复网络后重新执行启动.command即可重试：' + str(exc)) from exc
 
 
 def stop():

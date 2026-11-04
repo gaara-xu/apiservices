@@ -64,3 +64,13 @@ image_ai_jobs增加dispatch_model_version，单张筛查派发时冻结喜好参
 ## 2026-11-03 Mac启动地址同步
 
 Mac启动/重启就绪后，按通往110的路由获取本机IPv4，通过已有settings接口更新image-preference/ai.mac_url，保留其他配置，沿用audit_events审计。地址未变化不写入。无表结构变更；登记失败明确提示，服务保留，可再次执行启动重试。
+
+## 2026-11-04 110 MySQL启动管理修复（仅本次授权）
+
+- 根因：mysqld.service与startup-script调用/root/reload.sh并发直接启动同一数据目录，后者成功，前者因ibdata1锁冲突失败。
+- 新增/etc/systemd/system/mysqld.service.d/20-local-startup.conf：为/gaara/mysql目录增加RequiresMountsFor，明确沿用现有datadir/socket/pid-file/log-error。
+- /root/reload.sh的MySQL段改为systemctl start mysqld.service；Nginx及后续段逐字保留，未启停或修改Nginx。
+- 正常关闭原PID1718，全目录冷备份后以systemd启动，PID14198；active/enabled，重复start保持同一PID。原业务数据库均存在。未修改业务表结构、账户或数据库内容，未重启服务器。
+- 服务器备份：/gaara/APIservicesResource/maintenance/mysql-startup-20261104，包含全库SQL、冷备份data、原my.cnf、原unit和reload.sh。
+- 回退配置时先正常停止受管MySQL，恢复备份reload.sh，移除本次20-local-startup.conf并daemon-reload；确认无mysqld进程后再按原参数启动单一实例。不得覆盖当前数据或自动恢复冷备份，以免丢失修复后的新写入。
+- 本次授权不代表后续可任意调整数据库或服务器启动配置。整机重启后的自启尚未实测。

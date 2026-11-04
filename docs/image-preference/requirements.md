@@ -83,3 +83,6 @@
 初筛及两类AI复核均在右侧固定五个位置：前两张人工处理图片、当前锚点、后两张待处理图片。点击只切换大图；仅第三张确认后推进窗口，其他待处理位置确认不推进。已确认图片可回看并显示标签；不足五张保留空位。切换来源或手动刷新重新取窗口。
 
 GET /api/v1/image-preference/next 保留 image/review_progress，新增 window 数组（固定五项，缺位null，第三项等于image）。历史取自已有移动记录，无数据库结构变更。
+
+## 0.6.1 图片上传
+网页支持多选顺序上传，默认写入配置的all目录，同名改名不覆盖。POST /api/v1/image-preference/upload?filename=文件名，请求体为原始二进制（非multipart），返回201及image。数据库登记pending并记录upload审计，无表结构变更，不自动学习。

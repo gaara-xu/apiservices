@@ -242,3 +242,24 @@ def decide(image_id, decision, ai=False):
                 raise HTTPException(409, result['error'] or '移动尚未完成')
             cur.execute('SELECT * FROM image_items WHERE id=%s', (image_id,))
             return {'image':public_item(cur.fetchone()), 'already_applied':False}
+
+
+def accept_upload(temporary, filename):
+    """原子发布上传原图并登记待初筛索引，同名文件自动改名且记录审计。"""
+    root = folder_config()['all']
+    with locked_connection() as conn:
+        image_id = str(uuid.uuid4())
+        target = choose_destination(root, filename, image_id)
+        stat = temporary.stat()
+        with conn.cursor() as cur:
+            relative = str(target.relative_to(root))
+            cur.execute('SELECT id FROM image_items WHERE location_key=%s', (location_key(root,relative),))
+            if cur.fetchone():
+                target = target.with_name(target.stem+'__'+image_id+target.suffix)
+                relative = target.name
+            row = {'id':image_id,'relative_path':relative,'state':'pending','size_bytes':stat.st_size}
+            cur.execute('INSERT INTO image_items(id,location_key,folder,root_path,relative_path,state,size_bytes,mtime_ns,seen_token) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)', (image_id,location_key(root,relative),'all',str(root),relative,'pending',stat.st_size,stat.st_mtime_ns,str(uuid.uuid4())))
+            audit(cur,SERVICE,'image',image_id,'upload',None,row)
+            os.link(temporary,target)
+            conn.commit()
+        return {'image':public_item(row)}

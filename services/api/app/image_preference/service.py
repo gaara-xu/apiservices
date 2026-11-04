@@ -153,24 +153,33 @@ def review_progress(cur, roots, source, has_image):
 
 
 def next_image(source="all"):
-    """按人工初选或AI复核来源取一张图片，并恢复移动与跳过缺失文件。"""
+    """返回固定五图窗口：最近两张人工处理记录及前三张待处理图，缺位保持为空。"""
     roots = folder_config()
+    keys = ['all'] if source == 'all' else ['ai_like', 'ai_notlike'] if source == 'ai' else [source]
     with locked_connection() as conn:
         recover_moves(conn)
         with conn.cursor() as cur:
+            clauses = ' OR '.join('(folder=%s AND root_path=%s AND state=%s)' for _ in keys)
+            params = tuple(value for key in keys for value in (key, str(roots[key]), STATES[key]))
             while True:
-                keys = ['all'] if source == 'all' else ['ai_like', 'ai_notlike'] if source == 'ai' else [source]
-                clauses = ' OR '.join('(folder=%s AND root_path=%s AND state=%s)' for _ in keys)
-                params = tuple(value for key in keys for value in (key, str(roots[key]), STATES[key]))
-                cur.execute('SELECT * FROM image_items WHERE (' + clauses + ') ORDER BY created_at,id LIMIT 1', params)
-                row = cur.fetchone()
-                if not row:
-                    return {'image':None,'review_progress':review_progress(cur,roots,source,False)}
-                if safe_path(roots[row['folder']], row['relative_path']).is_file():
-                    return {'image':public_item(row),'review_progress':review_progress(cur,roots,source,True)}
-                cur.execute("UPDATE image_items SET state='missing' WHERE id=%s", (row['id'],))
-                audit(cur, SERVICE, 'image', row['id'], 'missing', row, {'state':'missing'})
+                cur.execute('SELECT * FROM image_items WHERE (' + clauses + ') ORDER BY created_at,id LIMIT 3', params)
+                pending = cur.fetchall()
+                missing = [row for row in pending if not safe_path(row['root_path'], row['relative_path']).is_file()]
+                if not missing:
+                    break
+                for row in missing:
+                    cur.execute("UPDATE image_items SET state='missing' WHERE id=%s", (row['id'],))
+                    audit(cur, SERVICE, 'image', row['id'], 'missing', row, {'state':'missing'})
                 conn.commit()
+            sources = ' OR '.join("LEFT(m.source_path,CHAR_LENGTH(%s)+1)=CONCAT(%s,'/')" for _ in keys)
+            history_params = tuple(value for key in keys for value in (str(roots[key]), str(roots[key])))
+            cur.execute("SELECT i.*,MAX(m.completed_at) AS reviewed_at FROM image_moves m JOIN image_items i ON i.id=m.image_id WHERE m.state='completed' AND m.decision IN ('like','notlike') AND (" + sources + ") AND i.state IN ('like','notlike') GROUP BY i.id ORDER BY reviewed_at DESC,i.id DESC LIMIT 2", history_params)
+            history = [public_item(row) for row in cur.fetchall() if row['folder'] in roots and row['root_path'] == str(roots[row['folder']]) and safe_path(row['root_path'],row['relative_path']).is_file()]
+            history.reverse()
+            upcoming = [public_item(row) for row in pending]
+            return {'image':upcoming[0] if upcoming else None,
+                    'window':[None]*(2-len(history))+history+upcoming+[None]*(3-len(upcoming)),
+                    'review_progress':review_progress(cur,roots,source,bool(upcoming))}
 
 
 def image_path(image_id):

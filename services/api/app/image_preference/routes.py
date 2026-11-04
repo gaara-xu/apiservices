@@ -28,7 +28,7 @@ def image_stats():
 
 @router.get('/next')
 def get_next(source: Literal["all", "ai", "ai_like", "ai_notlike"] = "all"):
-    """按来源获取下一张初选或AI待复核图片。"""
+    """按来源获取下一张及固定五图窗口，保留原有进度字段。"""
     return service.next_image(source)
 
 

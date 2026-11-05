@@ -11,7 +11,7 @@
 - `/api/v1/services/{service}/tasks/{task_id}`：GET 查询、PATCH 状态及结果。
 - `/api/v1/services/{service}/audit`：查询模块数据变更审计。
 
-任务只提供持久化生命周期，未接入 Mac 调度器，不自动执行 AI。已实现图片扫描、人工分类网页、原图/预览传输与无覆盖移动，详见 `docs/image-preference/API.md`。110不运行模型。
+任务只提供持久化生命周期，未接入 Mac 调度器，不自动执行 AI。已实现图片扫描、人工分类网页、原图/预览传输与无覆盖移动，详见 `图像识别/接口文档.md`。110不运行模型。
 
 ## 部署
 

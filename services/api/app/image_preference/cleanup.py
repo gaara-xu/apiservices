@@ -21,7 +21,7 @@ def learning_mode():
 
 @router.post('/cleanup-notlike')
 def cleanup_notlike():
-    """每次最多清理20张已用于成功训练且原图未变的不喜欢图片，先持久保存完整特征。"""
+    """一次清理全部符合条件的已用于成功训练且原图未变的不喜欢图片，先持久保存完整特征。"""
     from .ai import config, control_lock
     settings = config()
     removed = 0
@@ -35,7 +35,6 @@ def cleanup_notlike():
             items.execute("SELECT * FROM image_items WHERE folder='notlike' AND root_path=%s AND state IN ('notlike','archived') ORDER BY updated_at,id",(str(root),))
             candidates=items.fetchall()
             for row in candidates:
-                if removed>=20:break
                 path=service.safe_path(root,row['relative_path'])
                 if row['state']=='archived' and not path.exists():continue
                 try:
@@ -75,4 +74,4 @@ def cleanup_notlike():
                     removed+=1
                 except (OSError,ValueError,httpx.HTTPError) as exc:
                     skipped.append({'id':row['id'],'name':row['relative_path'],'reason':str(exc)})
-    return {'removed':removed,'skipped':skipped,'batch_limit':20}
+    return {'removed':removed,'skipped':skipped,'batch_limit':None}

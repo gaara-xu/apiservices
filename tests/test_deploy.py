@@ -24,7 +24,7 @@ elif a[0]=='build':
     s['images'].append(a[a.index('-t')+1]); code=1 if os.environ['SCENARIO']=='build_fail' else 0
 elif a[0]=='run':
     if '--name' in a:
-        name=a[a.index('--name')+1]; s['containers'][name]='apiserver:0.7.0'
+        name=a[a.index('--name')+1]; s['containers'][name]='apiserver:0.7.1'
         if name=='apiserver' and os.environ['SCENARIO']=='switch_fail': code=1
 elif a[0]=='exec':
     code=1 if os.environ['SCENARIO']=='candidate_fail' else 0
@@ -46,14 +46,14 @@ class DeployTests(unittest.TestCase):
             for name, content in [('docker', MOCK), ('flock', '#!/bin/sh\nexit 0\n'), ('sleep', '#!/bin/sh\nexit 0\n')]:
                 file=bin_dir/name; file.write_text(content); file.chmod(0o755)
             (base/'resources').mkdir()
-            (base/'resources/apiserver-0.7.0.tar.gz').write_text('temporary archive')
+            (base/'resources/apiserver-0.7.1.tar.gz').write_text('temporary archive')
             state=base/'state.json'
             state.write_text(json.dumps({'images':['python:3.10-slim-bullseye','apiserver:0.0.1'], 'containers':{'apiserver':'apiserver:0.0.1'},'calls':[]}))
             env_file=base/'.env'; env_file.write_text('DB_PASSWORD=test\n')
             env=os.environ | {'PATH':str(bin_dir)+':'+os.environ['PATH'],'MOCK_STATE':str(state),'SCENARIO':scenario,'RESOURCE_DIR':str(base/'resources'),'ENV_FILE':str(env_file)}
             result=subprocess.run(['bash',str(ROOT/'build.sh')],env=env,capture_output=True,text=True,errors="replace")
             state_data=json.loads(state.read_text())
-            state_data['archive_exists']=(base/'resources/apiserver-0.7.0.tar.gz').exists()
+            state_data['archive_exists']=(base/'resources/apiserver-0.7.1.tar.gz').exists()
             return result,state_data
 
     def test_failure_preserves_old(self):
@@ -64,14 +64,14 @@ class DeployTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode,0,result.stdout)
                 self.assertEqual(state['containers'],{'apiserver':'apiserver:0.0.1'})
                 self.assertIn('apiserver:0.0.1',state['images'])
-                self.assertNotIn('apiserver:0.7.0',state['images'])
+                self.assertNotIn('apiserver:0.7.1',state['images'])
                 self.assertTrue(state['archive_exists'])
 
     def test_success_cleans_old(self):
         """成功后只保留新版本，并保留 Python 基础镜像。"""
         result,state=self.run_scenario('success')
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        self.assertEqual(state['containers'],{'apiserver':'apiserver:0.7.0'})
+        self.assertEqual(state['containers'],{'apiserver':'apiserver:0.7.1'})
         self.assertNotIn('apiserver:0.0.1',state['images'])
         self.assertIn('python:3.10-slim-bullseye',state['images'])
         self.assertFalse(state['archive_exists'])

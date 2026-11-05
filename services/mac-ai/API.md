@@ -1,6 +1,6 @@
 # Mac AI 图像识别接口
 
-服务版本：0.1.0。默认监听Mac的8111端口；与110业务API的8110、Ollama的11434独立。
+服务版本：0.3.2。文档更新：2026-11-05。默认监听Mac的8111端口；与110业务API的8110、Ollama的11434独立。
 
 ## 运行与文件
 
@@ -8,13 +8,13 @@
 
 `config.json` 设置host、port、模型路径、允许读取图片的目录、device（auto/mps/cpu）、批量上限和启动等待时间。修改后重启。默认auto优先MPS。只运行一个Uvicorn worker，模型只加载一份，请求串行计算。
 
-模型位于 `/Users/gaara/hades/AILocal/ollama-models/siglip2-so400m-patch14-384`。服务代码在 `apiservices/services/mac-ai`。依赖环境 `.venv`、缓存及临时文件 `runtime`、日志 `runtime/service.log` 均位于服务目录。业务输入和输出不在Mac建库，返回给调用方保存至110的apiserver数据库。本服务没有图片上传、图片下载或目录扫描接口。
+模型位于 `/Users/gaara/hades/AILocal/ollama-models/siglip2-so400m-patch14-384`。服务代码在 `apiservices/services/mac-ai`。依赖环境 `.venv`、缓存及临时文件 `runtime`、日志 `runtime/service.log` 均位于服务目录。业务输入和输出不在Mac建库，返回给调用方保存至110的apiserver数据库。本服务支持接收图片内容进行计算，不提供文件存储型上传、图片下载或业务目录扫描接口。
 
 ## 访问方式
 
 本机：`http://127.0.0.1:8111`。110调用时将127.0.0.1替换为Mac实际内网IP；HTTP客户端应设置 `trust_env=False`，不能经VPN代理。共享目录须事先在Mac可访问，并配置为允许的目录；当前默认允许AILocal路径，其他位置在用户授权后再配置。
 
-请求里的路径必须是Mac可读的绝对路径，不是110容器内路径。接口不传输图片文件，只传路径、标签和数值结果。
+embeddings/classify中的路径必须是Mac可读的绝对路径，不是110容器内路径。preference/jobs接收二进制图片，preference/detect接收Base64图片，不需要共享路径。
 
 ### GET /health/live
 
@@ -26,7 +26,7 @@
 
 ### GET /api/v1/model
 
-返回模型名称、loading/ready/error状态、设备、错误、批量上限、标签上限和 `personal_preference_trained:false`。
+返回模型名称、loading/ready/error状态、设备、错误、批量上限、标签上限和 `personal_preference_trained`（是否已训练）。
 
 ### POST /api/v1/images/embeddings
 
@@ -60,7 +60,7 @@
 
 候选标签2至32项，非空且唯一，每项最多200字符；模型文本长度还有token限制，超长文本会截断。每张图片的标签按匹配分数降序返回。这是候选文本与图片的匹配分数，彼此独立、不保证和为1，也不是经过校准的真实概率。模型支持的语言和具体准确率应使用实际样本评估。
 
-这不是自由问答、OCR或自动生成图片描述接口；也尚未训练个人喜好，不能通过简单输入“喜欢/不喜欢”代替个人标注训练。
+这不是自由问答、OCR或自动生成图片描述接口；个人喜好请使用preference/detect，不能通过简单输入“喜欢/不喜欢”候选文本代替个人标注训练。
 
 ### GET /openapi.json
 
@@ -68,10 +68,10 @@
 
 ## 错误和调用限制
 
-- 422：路径不存在、未挂载、路径超出允许目录、图片损坏/过大、批量或标签参数无效。
+- 422：路径不存在、未挂载、路径超出允许目录、图片无法解码、批量或标签参数无效。
 - 429：模型正在计算，Retry-After为2秒，调用方稍后重试。
 - 503：模型未就绪或运行时计算失败；查询model接口和日志定位。
-- 默认单次1至4张图片，单图不超过4000万像素。建议客户端先从单张请求开始，超时设为120秒，首次MPS计算可能包含初始化耗时。
+- 路径接口默认单次1至4张图片；大图自动适配，不设上述旧像素拒绝阈值。建议客户端先从单张请求开始，超时设为120秒，首次MPS计算可能包含初始化耗时。
 
 ## Python调用示例
 
@@ -100,7 +100,7 @@ with httpx.Client(base_url="http://Mac内网IP:8111", trust_env=False, timeout=1
 - 同接口`kind=screen&model_version={训练UUID}`：使用固定版本评分，随后回调110 label、score和model_version。
 - `POST /api/v1/preference/finalize/{run_id}?expected={样本总数}`：确认全部样本且包含两类后训练类别均衡的L2逻辑回归，原子发布模型，重复调用幂等。
 
-110负责业务编号及图片移动，Mac不扫描业务目录、不调度图片。回调目标来自config.json的callback_base，不接受请求指定的任意回调目标。模型目录由preference_model_path配置。原图仅在内存中处理；64MiB/4000万像素上限。400步全批量优化轻量线性层，不微调SigLIP权重。全部训练特征在拟合时进入内存，当前用于几百至几千张人工样本；海量待筛图片逐张处理，不一次性载入。旧的路径特征和候选文本标签接口继续兼容。
+110负责业务编号及图片移动，Mac不扫描业务目录、不调度图片。回调目标来自config.json的callback_base，不接受请求指定的任意回调目标。模型目录由preference_model_path配置。原图仅在内存中处理；旧64MiB/4000万像素拒绝限制已取消。400步全批量优化轻量线性层，不微调SigLIP权重。全部训练特征在拟合时进入内存，当前用于几百至几千张人工样本；海量待筛图片逐张处理，不一次性载入。旧的路径特征和候选文本标签接口继续兼容。
 
 错误：422非法标签/图片或不完整训练，429并发繁忙，503模型/回调未就绪。回调失败由110按同一job_id重试，已提取样本不重复学习。训练候选和正式模型不混用；当前无自动准确率承诺，人工复核用于验证实际效果。
 
@@ -129,3 +129,32 @@ POST /api/v1/preference/detect，Content-Type: application/json。
 {"images":[{"id":"网页图片1","data_base64":"图片原始字节的Base64"}],"threshold":0.5}
 ```
 支持纯Base64或data URL；多张顺序计算，建议调用方分批避免请求体过大。整批固定当前喜好模型版本。返回total、matched、failed、matches（喜欢的图片）及results（每张评分或错误），id和index用于对应原网页。score未经概率校准，threshold范围0到1。单张失败不终止其余图片。未训练返回503，与现有筛查并发繁忙返回429及Retry-After。不会保存原图、训练特征、改变人工标签或回调110；不接收远程URL，不主动访问网页。
+
+### 独立检测返回示例
+
+```json
+{"total":1,"matched":1,"failed":0,"threshold":0.5,"model_version":"模型版本UUID","matches":[{"id":"图片1","index":0,"success":true,"label":"like","score":0.83,"model_version":"模型版本UUID"}],"results":[{"id":"图片1","index":0,"success":true,"label":"like","score":0.83,"model_version":"模型版本UUID"}]}
+```
+
+results按输入顺序返回；index从0开始。单张失败项为id、index、success=false、error，整批仍返回200；应检查failed，不要仅凭HTTP 200判断全部成功。没有喜欢的图片时matches=[]。threshold越高，筛选越严格，分数不是经过校准的个人喜好概率。
+
+### 独立检测Python示例
+
+```python
+import base64
+from pathlib import Path
+import httpx
+
+# 编码调用方本地图片，并使用标识对应网页上的原图。
+images = [{"id": "图片1", "data_base64": base64.b64encode(Path("example.jpg").read_bytes()).decode("ascii")}]
+with httpx.Client(trust_env=False, timeout=180) as client:
+    response = client.post("http://Mac当前内网IP:8111/api/v1/preference/detect", json={"images": images, "threshold": 0.5})
+    response.raise_for_status()
+    print(response.json())
+```
+
+Mac地址可能随网络变化。启动/重启会登记到110；本机调用始终可用127.0.0.1。普通网页跨域直连还受浏览器跨域和内网访问策略约束，本服务当前没有配置CORS，接口可用不代表任意网页都能直接fetch。
+
+## 文档维护
+
+项目根目录的“Mac接口文档.md”链接至本文件，两处是同一份文档。修改Mac接口、请求/响应字段、错误行为、模型版本、端口或启动方式时，必须在同次修改中更新本文；接口结构变化同时更新openapi.json。示例、当前说明与历史章节冲突时必须同步修正，不能只追加新版本说明。

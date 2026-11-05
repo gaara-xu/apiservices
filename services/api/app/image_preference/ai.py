@@ -489,6 +489,29 @@ def review_learning():
             conn.commit()
 
 
+def learning_tick(payload):
+    """共用队列每次推进一张学习或一次发布，沿用部署闸门及跨进程学习锁。"""
+    from ..background import RetryTask
+    with connect() as leader,leader.cursor() as cur:
+        cur.execute("SELECT GET_LOCK('apiserver_ai_worker',0) AS acquired")
+        if cur.fetchone()['acquired']!=1:raise RetryTask('部署期间等待')
+        try:
+            cur.execute("SELECT GET_LOCK('apiserver_ai_worker_train',0) AS acquired")
+            acquired=cur.fetchone()['acquired']==1
+        finally:cur.execute("SELECT RELEASE_LOCK('apiserver_ai_worker')")
+        if not acquired:raise RetryTask('学习任务正在处理')
+        try:
+            review_learning()
+            run,job=next_job('train')
+            if job:
+                try:dispatch(run,job)
+                except (httpx.RequestError,RetryLater) as exc:defer_job(job,str(exc)[:1000])
+                except Exception as exc:fail_job(job,str(exc)[:1000])
+            elif run:finish_or_refill(run)
+            return {'run_id':run['id'] if run else None}
+        finally:cur.execute("SELECT RELEASE_LOCK('apiserver_ai_worker_train')")
+
+
 def worker_loop(stop_event, kind):
     """学习和筛查各自独立后台循环与跨进程锁，部署闸门只保护领取动作。"""
     while not stop_event.is_set():
@@ -527,11 +550,13 @@ def worker_loop(stop_event, kind):
 
 
 def start_worker():
-    """正式服务分别启动学习与筛查线程，共用停止事件，候选实例保持关闭。"""
+    """正式服务启动共享队列处理学习和清理，筛查独立线程，候选实例不消费。"""
     event=threading.Event()
     threads=[]
     if os.getenv('AI_WORKER_ENABLED','0')=='1':
-        for kind in ('train','screen'):
+        from ..background import start as start_queue
+        threads.extend(start_queue(event))
+        for kind in ('screen',):
             thread=threading.Thread(target=worker_loop,args=(event,kind),daemon=True,name='ai-'+kind)
             thread.start();threads.append(thread)
     return event,threads

@@ -21,8 +21,10 @@ async def lifespan(app):
     event.set()
 
 
-app = FastAPI(title='apiserver', version=os.getenv('APP_VERSION', '0.7.1'), lifespan=lifespan, docs_url=None, redoc_url=None)
+app = FastAPI(title='apiserver', version=os.getenv('APP_VERSION', '0.8.0'), lifespan=lifespan, docs_url=None, redoc_url=None)
 from .image_preference.cleanup import router as cleanup_router
+from .background import router as queue_router
+app.include_router(queue_router)
 app.include_router(cleanup_router)
 app.include_router(image_router)
 app.include_router(ai_router)

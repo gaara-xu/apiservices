@@ -77,3 +77,7 @@ Mac启动/重启就绪后，按通往110的路由获取本机IPv4，通过已有
 
 ## 007_retained_samples（2026-11-05）
 新增image_retained_samples保存已清理不喜欢原图的完整特征及标签；image_items新增使用archived状态（原字段长度兼容）。删除前提交归档和retain_before_delete审计，再删除原图并记delete_original审计。保留记录继续加入人工训练快照，扫描不标记为missing，回看不展示已清理原图。没有自动清理或数据回填。
+
+## 008_background_queue（2026-11-05）
+
+新增background_jobs共用任务表，包含类型、批次、输入、状态、结果、错误、尝试次数和可执行时间；正式服务幂等创建固定编号学习调度任务。清理逐图入队，历史人工复核队列表保留并由共用队列调度消费。无旧标签或模型数据迁移，无自动清理动作。详细接口与扩展规则见docs/background-queue.md。

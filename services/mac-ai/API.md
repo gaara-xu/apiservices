@@ -121,3 +121,11 @@ with httpx.Client(base_url="http://Mac内网IP:8111", trust_env=False, timeout=1
 ## 2026-11-03 Mac启动地址同步
 
 Mac启动/重启就绪后，按通往110的路由获取本机IPv4，通过已有settings接口更新image-preference/ai.mac_url，保留其他配置，沿用audit_events审计。地址未变化不写入。无表结构变更；登记失败明确提示，服务保留，可再次执行启动重试。
+
+## 独立喜好检测（0.3.2）
+
+POST /api/v1/preference/detect，Content-Type: application/json。
+```json
+{"images":[{"id":"网页图片1","data_base64":"图片原始字节的Base64"}],"threshold":0.5}
+```
+支持纯Base64或data URL；多张顺序计算，建议调用方分批避免请求体过大。整批固定当前喜好模型版本。返回total、matched、failed、matches（喜欢的图片）及results（每张评分或错误），id和index用于对应原网页。score未经概率校准，threshold范围0到1。单张失败不终止其余图片。未训练返回503，与现有筛查并发繁忙返回429及Retry-After。不会保存原图、训练特征、改变人工标签或回调110；不接收远程URL，不主动访问网页。

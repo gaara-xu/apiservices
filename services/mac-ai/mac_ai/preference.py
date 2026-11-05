@@ -1,5 +1,8 @@
 """个人喜好模型：逐图提取特征，完整学习后原子发布轻量分类器。"""
 import io
+import base64
+import binascii
+from pydantic import BaseModel, Field
 import hashlib
 import json
 import os
@@ -10,6 +13,16 @@ import numpy as np
 from .images import read_model_image
 from fastapi import APIRouter, HTTPException, Request, Body
 import httpx
+
+
+class DetectionImage(BaseModel):
+    id: str
+    data_base64: str
+
+
+class DetectionRequest(BaseModel):
+    images: list[DetectionImage] = Field(min_length=1)
+    threshold: float = Field(default=0.5, ge=0, le=1)
 
 
 class Preference:
@@ -138,6 +151,35 @@ class Preference:
 def make_router(preference):
     """创建图片接收、训练发布和状态接口，完成逐图计算后回调110。"""
     router = APIRouter(prefix='/api/v1/preference', tags=['个人喜好'])
+
+    @router.post('/detect')
+    def detect(body: DetectionRequest):
+        """独立批量检测个人喜好，冻结本轮模型版本，逐图返回结果且不写学习数据或回调110。"""
+        status = preference.status()
+        if not status['trained']:
+            raise HTTPException(503, '个人喜好模型尚未训练')
+        if not preference.screen_lock.acquire(blocking=False):
+            raise HTTPException(429, '喜好筛查正在处理，请稍后重试', headers={'Retry-After':'2'})
+        results = []
+        try:
+            for index, item in enumerate(body.images):
+                try:
+                    encoded = item.data_base64
+                    if encoded.startswith('data:'):
+                        encoded = encoded.split(',',1)[1]
+                    content = base64.b64decode(encoded, validate=True)
+                    if not content:
+                        raise ValueError('图片内容为空')
+                    result = preference.predict(status['model_version'], content)
+                    result['label'] = 'like' if result['score'] >= body.threshold else 'notlike'
+                    results.append({'id':item.id, 'index':index, 'success':True, **result})
+                except (ValueError, OSError, RuntimeError, binascii.Error, IndexError) as exc:
+                    results.append({'id':item.id, 'index':index, 'success':False, 'error':str(exc)})
+        finally:
+            preference.screen_lock.release()
+        matches = [r for r in results if r['success'] and r['label']=='like']
+        return {'total':len(results), 'matched':len(matches), 'failed':sum(not r['success'] for r in results),
+                'threshold':body.threshold, 'model_version':status['model_version'], 'matches':matches, 'results':results}
 
     @router.get('/status')
     def status():

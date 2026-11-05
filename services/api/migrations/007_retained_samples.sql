@@ -1,0 +1,6 @@
+CREATE TABLE image_retained_samples (
+ image_id CHAR(36) PRIMARY KEY,
+ label VARCHAR(16) NOT NULL,
+ feature JSON NOT NULL,
+ created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;

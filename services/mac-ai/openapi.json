@@ -2,9 +2,129 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Mac AI 图像识别接口",
-    "version": "0.3.2"
+    "version": "0.3.3"
   },
   "paths": {
+    "/api/v1/preference/features/{run_id}/{job_id}": {
+      "get": {
+        "tags": [
+          "个人喜好"
+        ],
+        "summary": "Export Feature",
+        "description": "导出已提取特征供110在删除原图前持久保留，不修改模型。",
+        "operationId": "export_feature_api_v1_preference_features__run_id___job_id__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/preference/retained/{job_id}": {
+      "post": {
+        "tags": [
+          "个人喜好"
+        ],
+        "summary": "Retained",
+        "description": "恢复110保留的人工样本特征到本轮训练并回调，不需要原图。",
+        "operationId": "retained_api_v1_preference_retained__job_id__post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "label",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Label"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "title": "Feature"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/preference/detect": {
       "post": {
         "tags": [

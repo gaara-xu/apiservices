@@ -86,3 +86,6 @@ GET /api/v1/image-preference/next 保留 image/review_progress，新增 window �
 
 ## 0.6.1 图片上传
 网页支持多选顺序上传，默认写入配置的all目录，同名改名不覆盖。POST /api/v1/image-preference/upload?filename=文件名，请求体为原始二进制（非multipart），返回201及image。数据库登记pending并记录upload审计，无表结构变更，不自动学习。
+
+## 0.7.0 日常筛查与原图清理
+GET /learning-mode：数据库存在已完成且已发布版本的训练记录时show_learning=false，隐藏手动学习与停止学习按钮，仍保留原接口及后台复核学习。空环境恢复入口。POST /cleanup-notlike：用户确认后每次最多删除20张当前notlike目录中、摘要匹配已完成训练且完整特征可归档的原图；返回removed、skipped及原因，训练进行中返回409。数据库先保留完整特征和标签，未来训练直接恢复，不依赖已删除原图；回看过滤已归档图片。现有个人分类器不变；外部手动删除不享受此保障。

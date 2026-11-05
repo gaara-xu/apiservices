@@ -74,10 +74,12 @@ def set_state(cur, run_id, state, error=None):
 
 
 def enqueue(cur, run, roots):
-    """数据库内建立未派发图片快照，训练只选人工标签且不包含AI目录。"""
+    """建立人工标签快照，包含已清理原图但保留特征的样本，不包含AI预测标签。"""
     keys = ['good', 'like', 'notlike'] if run['kind'] == 'train' else ['all']
     clause = ' OR '.join('(i.folder=%s AND i.root_path=%s AND i.state=%s)' for _ in keys)
     params = tuple(v for key in keys for v in (key, str(roots[key]), service.STATES[key]))
+    if run['kind']=='train':
+        clause += " OR (i.state='archived' AND EXISTS (SELECT 1 FROM image_retained_samples a WHERE a.image_id=i.id))"
     cur.execute("INSERT INTO image_ai_jobs(id,run_id,image_id,label,size_bytes,mtime_ns) "
                 "SELECT UUID(),%s,i.id,IF(i.folder='notlike','notlike','like'),i.size_bytes,i.mtime_ns FROM image_items i "
                 "WHERE (" + clause + ") AND NOT EXISTS (SELECT 1 FROM image_ai_jobs j WHERE j.run_id=%s AND j.image_id=i.id)",
@@ -117,7 +119,10 @@ def start_run(kind, request_ids=None):
     roots=service.folder_config()
     if kind=='train':
         counts=service.stats()
-        if counts['good']+counts['like']==0 or counts['notlike']==0:
+        with connect() as archive_conn, archive_conn.cursor() as archive_cur:
+            archive_cur.execute('SELECT COUNT(*) AS amount FROM image_retained_samples')
+            retained_count=archive_cur.fetchone()['amount']
+        if counts['good']+counts['like']==0 or counts['notlike']+retained_count==0:
             raise HTTPException(409,'学习需要至少一张喜欢和一张不喜欢的人工样本')
     with control_lock() as (conn, cur):
         cur.execute("SELECT id FROM image_ai_runs WHERE kind=%s AND state IN ('running','stopping','finalizing','paused_for_learning')",(kind,))
@@ -315,6 +320,15 @@ def prepare_learning(run):
             if cur.fetchone()['state']!='running':return
             cur.execute("SELECT j.id FROM image_ai_jobs j JOIN image_ai_runs r ON r.id=j.run_id WHERE j.image_id=%s AND j.state='completed' AND r.kind='train' AND j.run_id<>%s LIMIT 1",(job['image_id'],run['id']))
             existing=cur.fetchone() is not None
+        with connect() as archive_conn, archive_conn.cursor() as archive_cur:
+            archive_cur.execute('SELECT feature FROM image_retained_samples WHERE image_id=%s',(job['image_id'],))
+            retained=archive_cur.fetchone()
+        if retained:
+            feature=json.loads(retained['feature']) if isinstance(retained['feature'],str) else retained['feature']
+            with connect() as archive_conn, archive_conn.cursor() as archive_cur:
+                archive_cur.execute("INSERT IGNORE INTO image_learning_plan(job_id,run_id,input_kind,content_sha256) VALUES(%s,%s,'reuse',%s)",(job['id'],run['id'],feature['content_sha256']))
+                archive_conn.commit()
+            continue
         kind='changed' if existing else 'new'
         checksum=None;previous=None;error=None
         try:
@@ -342,8 +356,18 @@ def prepare_learning(run):
 
 
 def dispatch(run, job):
-    """核对当前原图，未变图片优先复用特征，新增或修改图片才传给Mac重新提取。"""
+    """归档样本直接恢复数据库特征；其余核对原图并复用或重新提取。"""
     settings = config()
+    if run['kind']=='train':
+        with connect() as conn,conn.cursor() as cur:
+            cur.execute('SELECT feature FROM image_retained_samples WHERE image_id=%s',(job['image_id'],))
+            retained=cur.fetchone()
+        if retained:
+            feature=json.loads(retained['feature']) if isinstance(retained['feature'],str) else retained['feature']
+            with httpx.Client(trust_env=False,timeout=180) as client:
+                response=client.post(settings['mac_url']+'/api/v1/preference/retained/'+job['id'],params={'run_id':run['id'],'label':job['label']},json=feature)
+                check_response(response)
+            return
     path = service.image_path(job['image_id'])
     stat = path.stat()
     if stat.st_size != job['size_bytes'] or stat.st_mtime_ns != job['mtime_ns']:

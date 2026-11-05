@@ -111,7 +111,7 @@ def scan(folders=None):
                         cur.execute('INSERT INTO image_items(id,location_key,folder,root_path,relative_path,state,size_bytes,mtime_ns,seen_token) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE size_bytes=VALUES(size_bytes),mtime_ns=VALUES(mtime_ns),seen_token=VALUES(seen_token),state=IF(state IN (\'missing\',\'pending\',\'good\',\'like\',\'notlike\'),VALUES(state),state)',
                             (str(uuid.uuid4()), location_key(root, relative), folder, str(root), relative, STATES[folder], stat.st_size, stat.st_mtime_ns, token))
                         count += 1
-                cur.execute("UPDATE image_items SET state='missing' WHERE root_path=%s AND seen_token<>%s AND state NOT IN ('moving','error')", (str(root), token))
+                cur.execute("UPDATE image_items SET state='missing' WHERE root_path=%s AND seen_token<>%s AND state NOT IN ('moving','error','archived')", (str(root), token))
                 totals[folder] = count
             audit(cur, SERVICE, 'scan', token, 'scan', None, {'counts':totals, 'roots':{key:str(path) for key,path in roots.items()}})
             conn.commit()

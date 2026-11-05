@@ -152,6 +152,31 @@ def make_router(preference):
     """创建图片接收、训练发布和状态接口，完成逐图计算后回调110。"""
     router = APIRouter(prefix='/api/v1/preference', tags=['个人喜好'])
 
+    @router.get('/features/{run_id}/{job_id}')
+    def export_feature(run_id: str, job_id: str):
+        """导出已提取特征供110在删除原图前持久保留，不修改模型。"""
+        try:
+            path = preference.root/'candidates'/preference.identifier(run_id)/(preference.identifier(job_id)+'.json')
+            return json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            raise HTTPException(404, '特征记录不可用') from exc
+
+    @router.post('/retained/{job_id}')
+    def retained(job_id: str, run_id: str, label: str, feature: dict = Body(...)):
+        """恢复110保留的人工样本特征到本轮训练并回调，不需要原图。"""
+        vector = feature.get('embedding', [])
+        if label not in ('like','notlike') or len(vector)!=1152 or not np.isfinite(np.asarray(vector,dtype=float)).all():
+            raise HTTPException(422, '保留特征无效')
+        if not preference.lock.acquire(blocking=False):
+            raise HTTPException(429, '学习正在处理')
+        try:
+            directory = preference.root/'candidates'/preference.identifier(run_id)
+            directory.mkdir(parents=True, exist_ok=True)
+            preference.atomic_json(directory/(preference.identifier(job_id)+'.json'), {**feature,'label':label,'reused':True})
+            return send_callback(job_id,run_id,{'label':label,'extracted':True,'reused':True,'content_sha256':feature['content_sha256']})
+        finally:
+            preference.lock.release()
+
     @router.post('/detect')
     def detect(body: DetectionRequest):
         """独立批量检测个人喜好，冻结本轮模型版本，逐图返回结果且不写学习数据或回调110。"""

@@ -74,3 +74,6 @@ Mac启动/重启就绪后，按通往110的路由获取本机IPv4，通过已有
 - 服务器备份：/gaara/APIservicesResource/maintenance/mysql-startup-20261104，包含全库SQL、冷备份data、原my.cnf、原unit和reload.sh。
 - 回退配置时先正常停止受管MySQL，恢复备份reload.sh，移除本次20-local-startup.conf并daemon-reload；确认无mysqld进程后再按原参数启动单一实例。不得覆盖当前数据或自动恢复冷备份，以免丢失修复后的新写入。
 - 本次授权不代表后续可任意调整数据库或服务器启动配置。整机重启后的自启尚未实测。
+
+## 007_retained_samples（2026-11-05）
+新增image_retained_samples保存已清理不喜欢原图的完整特征及标签；image_items新增使用archived状态（原字段长度兼容）。删除前提交归档和retain_before_delete审计，再删除原图并记delete_original审计。保留记录继续加入人工训练快照，扫描不标记为missing，回看不展示已清理原图。没有自动清理或数据回填。

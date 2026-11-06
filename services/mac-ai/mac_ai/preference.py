@@ -33,13 +33,12 @@ class MatchRateRequest(BaseModel):
 class Preference:
     """管理候选特征与版本化分类器，人工标签不会被预测回填。"""
     def __init__(self, engine, directory, callback_base):
-        """设置模型目录及回调地址，学习写入与筛查使用独立锁，共用同一视觉编码器。"""
+        """设置模型目录及回调地址，仅学习写入互斥，推理并发接收并共享同一视觉编码器。"""
         self.engine = engine
         self.root = Path(directory)
         self.root.mkdir(parents=True, exist_ok=True)
         self.callback_base = callback_base.rstrip('/')
         self.lock = threading.Lock()
-        self.screen_lock = threading.Lock()
 
     def identifier(self, value):
         """仅接受UUID任务及模型版本作为模型文件名。"""
@@ -184,57 +183,49 @@ def make_router(preference):
 
     @router.post('/match-rate')
     def match_rate(body: MatchRateRequest):
-        """下载URL列表并用同一喜好版本计算命中占比，仅返回百分比；任一失败不输出失真比例。"""
+        """并发接收URL批次，用同一喜好版本计算命中占比，仅返回百分比；任一失败不输出失真比例。"""
         status=preference.status()
         if not status['trained']:
             raise HTTPException(503, '个人喜好模型尚未训练')
-        if not preference.screen_lock.acquire(blocking=False):
-            raise HTTPException(429, '喜好筛查正在处理，请稍后重试', headers={'Retry-After':'2'})
         matched=0
-        try:
-            with httpx.Client(trust_env=False,timeout=30,follow_redirects=True,max_redirects=5) as client:
-                for index,url in enumerate(body.urls):
-                    try:
-                        response=client.get(str(url));response.raise_for_status()
-                    except httpx.HTTPError as exc:
-                        raise HTTPException(502, {'index':index,'message':'图片下载失败，未计算命中率'}) from exc
-                    try:
-                        result=preference.predict(status['model_version'],response.content)
-                        matched+=result['score']>=body.threshold
-                    except (ValueError,OSError) as exc:
-                        raise HTTPException(422, {'index':index,'message':'图片无法解码或模型文件不可用，未计算命中率'}) from exc
-                    except RuntimeError as exc:
-                        raise HTTPException(503, {'index':index,'message':'模型计算暂不可用，未计算命中率'}) from exc
-            percent=f'{matched/len(body.urls)*100:.2f}'.rstrip('0').rstrip('.')
-            return {'hit_rate':percent+'%'}
-        finally:
-            preference.screen_lock.release()
+        with httpx.Client(trust_env=False,timeout=30,follow_redirects=True,max_redirects=5) as client:
+            for index,url in enumerate(body.urls):
+                try:
+                    response=client.get(str(url));response.raise_for_status()
+                except httpx.HTTPError as exc:
+                    raise HTTPException(502, {'index':index,'message':'图片下载失败，未计算命中率'}) from exc
+                try:
+                    result=preference.predict(status['model_version'],response.content)
+                    matched+=result['score']>=body.threshold
+                except (ValueError,OSError) as exc:
+                    raise HTTPException(422, {'index':index,'message':'图片无法解码或模型文件不可用，未计算命中率'}) from exc
+                except RuntimeError as exc:
+                    raise HTTPException(503, {'index':index,'message':'模型计算暂不可用，未计算命中率'}) from exc
+        percent=f'{matched/len(body.urls)*100:.2f}'.rstrip('0').rstrip('.')
+        return {'hit_rate':percent+'%'}
+
 
     @router.post('/detect')
     def detect(body: DetectionRequest):
-        """独立批量检测个人喜好，冻结本轮模型版本，逐图返回结果且不写学习数据或回调110。"""
+        """并发批量检测个人喜好，冻结本轮模型版本，逐图返回结果且不写学习数据或回调110。"""
         status = preference.status()
         if not status['trained']:
             raise HTTPException(503, '个人喜好模型尚未训练')
-        if not preference.screen_lock.acquire(blocking=False):
-            raise HTTPException(429, '喜好筛查正在处理，请稍后重试', headers={'Retry-After':'2'})
         results = []
-        try:
-            for index, item in enumerate(body.images):
-                try:
-                    encoded = item.data_base64
-                    if encoded.startswith('data:'):
-                        encoded = encoded.split(',',1)[1]
-                    content = base64.b64decode(encoded, validate=True)
-                    if not content:
-                        raise ValueError('图片内容为空')
-                    result = preference.predict(status['model_version'], content)
-                    result['label'] = 'like' if result['score'] >= body.threshold else 'notlike'
-                    results.append({'id':item.id, 'index':index, 'success':True, **result})
-                except (ValueError, OSError, RuntimeError, binascii.Error, IndexError) as exc:
-                    results.append({'id':item.id, 'index':index, 'success':False, 'error':str(exc)})
-        finally:
-            preference.screen_lock.release()
+        for index, item in enumerate(body.images):
+            try:
+                encoded = item.data_base64
+                if encoded.startswith('data:'):
+                    encoded = encoded.split(',',1)[1]
+                content = base64.b64decode(encoded, validate=True)
+                if not content:
+                    raise ValueError('图片内容为空')
+                result = preference.predict(status['model_version'], content)
+                result['label'] = 'like' if result['score'] >= body.threshold else 'notlike'
+                results.append({'id':item.id, 'index':index, 'success':True, **result})
+            except (ValueError, OSError, RuntimeError, binascii.Error, IndexError) as exc:
+                results.append({'id':item.id, 'index':index, 'success':False, 'error':str(exc)})
+
         matches = [r for r in results if r['success'] and r['label']=='like']
         return {'total':len(results), 'matched':len(matches), 'failed':sum(not r['success'] for r in results),
                 'threshold':body.threshold, 'model_version':status['model_version'], 'matches':matches, 'results':results}
@@ -278,7 +269,7 @@ def make_router(preference):
     @router.post('/jobs/{job_id}')
     async def job(job_id: str, request: Request, run_id: str, kind: str,
                   label: str = '', model_version: str = ''):
-        """接收一张二进制图片，在工作线程适配尺寸并计算回调，不按文件大小拒绝。"""
+        """接收二进制图片并在线程计算回调；仅训练请求互斥，筛查并发接收。"""
         try:
             preference.identifier(job_id)
             preference.identifier(run_id)
@@ -289,8 +280,8 @@ def make_router(preference):
         chunks = bytearray()
         async for chunk in request.stream():
             chunks.extend(chunk)
-        work_lock = preference.lock if kind == 'train' else preference.screen_lock
-        if not work_lock.acquire(blocking=False):
+        work_lock = preference.lock if kind == 'train' else None
+        if work_lock is not None and not work_lock.acquire(blocking=False):
             raise HTTPException(429, '同类AI请求正在处理')
         try:
             from starlette.concurrency import run_in_threadpool
@@ -301,7 +292,7 @@ def make_router(preference):
         except (RuntimeError, httpx.HTTPError) as exc:
             raise HTTPException(503, str(exc)) from exc
         finally:
-            work_lock.release()
+            if work_lock is not None:work_lock.release()
 
     def execute(job_id, run_id, kind, label, model_version, content):
         """执行特征学习或评分，110确认回调成功后才结束本张请求。"""

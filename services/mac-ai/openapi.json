@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Mac AI 图像识别接口",
-    "version": "0.3.4"
+    "version": "0.3.5"
   },
   "paths": {
     "/api/v1/preference/features/{run_id}/{job_id}": {
@@ -131,7 +131,7 @@
           "个人喜好"
         ],
         "summary": "Match Rate",
-        "description": "下载URL列表并用同一喜好版本计算命中占比，仅返回百分比；任一失败不输出失真比例。",
+        "description": "并发接收URL批次，用同一喜好版本计算命中占比，仅返回百分比；任一失败不输出失真比例。",
         "operationId": "match_rate_api_v1_preference_match_rate_post",
         "requestBody": {
           "content": {
@@ -171,7 +171,7 @@
           "个人喜好"
         ],
         "summary": "Detect",
-        "description": "独立批量检测个人喜好，冻结本轮模型版本，逐图返回结果且不写学习数据或回调110。",
+        "description": "并发批量检测个人喜好，冻结本轮模型版本，逐图返回结果且不写学习数据或回调110。",
         "operationId": "detect_api_v1_preference_detect_post",
         "requestBody": {
           "content": {
@@ -387,7 +387,7 @@
           "个人喜好"
         ],
         "summary": "Job",
-        "description": "接收一张二进制图片，在工作线程适配尺寸并计算回调，不按文件大小拒绝。",
+        "description": "接收二进制图片并在线程计算回调；仅训练请求互斥，筛查并发接收。",
         "operationId": "job_api_v1_preference_jobs__job_id__post",
         "parameters": [
           {

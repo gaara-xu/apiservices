@@ -63,11 +63,10 @@ class Engine:
         return images
 
     def calculate(self, paths, labels=None):
-        """非阻塞获取计算锁，返回归一化特征或独立候选标签匹配分数。"""
+        """等待共享计算资源后返回特征或候选标签分数，不因并发请求拒绝。"""
         if self.state != 'ready':
             raise RuntimeError('模型尚未就绪')
-        if not self.lock.acquire(blocking=False):
-            raise BlockingIOError('模型正在处理其他请求，请稍后重试')
+        self.lock.acquire()
         try:
             import torch
             images = self.read_images(paths)
@@ -90,11 +89,10 @@ class Engine:
             self.lock.release()
 
     def embed_image(self, image):
-        """对内存图片提取特征，短时排队共享唯一SigLIP，不因另一类计算而直接拒绝。"""
+        """对内存图片提取特征，排队共享唯一SigLIP，不因另一类计算而直接拒绝。"""
         if self.state != 'ready':
             raise RuntimeError('模型尚未就绪')
-        if not self.lock.acquire(timeout=120):
-            raise RuntimeError('等待共享视觉编码器超时，请重试')
+        self.lock.acquire()
         try:
             import torch
             with torch.inference_mode():

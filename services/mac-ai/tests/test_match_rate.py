@@ -48,3 +48,31 @@ class MatchRateTests(unittest.TestCase):
         preference.lock.acquire()
         self.assertEqual(client.post('/api/v1/preference/finalize/test?expected=2').status_code,429)
         preference.lock.release()
+
+    def test_base64_gif_and_mixed_inputs(self):
+        """验证纯Base64、Data URL、URL混合及多帧GIF只按首帧计一张。"""
+        import base64
+        import io
+        from PIL import Image
+        from mac_ai.images import read_model_image
+        stream=io.BytesIO()
+        Image.new('RGB',(4,4),'red').save(stream,format='GIF',save_all=True,
+            append_images=[Image.new('RGB',(4,4),'blue')],duration=100,loop=0)
+        encoded=base64.b64encode(stream.getvalue()).decode()
+        preference=Mock()
+        preference.status.return_value={'trained':True,'model_version':'fixed'}
+        def predict(version,content):
+            """实际解码合成GIF，确认读取首帧而非后续动画帧。"""
+            self.assertEqual(read_model_image(io.BytesIO(content)).getpixel((0,0)),(255,0,0))
+            return {'score':0.8}
+        preference.predict.side_effect=predict
+        app=FastAPI();app.include_router(make_router(preference));client=TestClient(app)
+        with patch('mac_ai.preference.httpx.Client') as downloader:
+            downloader.return_value.__enter__.return_value.get.return_value.content=stream.getvalue()
+            for body in ({'images':[encoded]}, {'images':['data:image/gif;base64,'+encoded]},
+                         {'urls':['http://example.test/a.gif'],'images':[encoded]}):
+                response=client.post('/api/v1/preference/match-rate',json=body)
+                self.assertEqual(response.status_code,200)
+                self.assertEqual(response.json(),{'hit_rate':'100%'})
+            for invalid in ('','###','data:image/gif;base64'):
+                self.assertEqual(client.post('/api/v1/preference/match-rate',json={'images':[invalid]}).status_code,422)

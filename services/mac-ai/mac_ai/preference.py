@@ -2,7 +2,7 @@
 import io
 import base64
 import binascii
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, model_validator
 import hashlib
 import json
 import os
@@ -26,7 +26,15 @@ class DetectionRequest(BaseModel):
 
 
 class MatchRateRequest(BaseModel):
-    urls: list[HttpUrl] = Field(min_length=1)
+    urls: list[HttpUrl] = Field(default_factory=list)
+    images: list[str] = Field(default_factory=list)
+
+    @model_validator(mode='after')
+    def require_images(self):
+        """URL和Base64可混合提交，但合计至少提供一张图片。"""
+        if not self.urls and not self.images:
+            raise ValueError('至少提供一个URL或Base64图片')
+        return self
     threshold: float = Field(default=0.5, ge=0, le=1)
 
 
@@ -183,25 +191,34 @@ def make_router(preference):
 
     @router.post('/match-rate')
     def match_rate(body: MatchRateRequest):
-        """并发接收URL批次，用同一喜好版本计算命中占比，仅返回百分比；任一失败不输出失真比例。"""
+        """并发接收URL和Base64批次，GIF按首帧用同一喜好版本计算命中占比，仅返回百分比；任一失败不输出失真比例。"""
         status=preference.status()
         if not status['trained']:
             raise HTTPException(503, '个人喜好模型尚未训练')
         matched=0
         with httpx.Client(trust_env=False,timeout=30,follow_redirects=True,max_redirects=5) as client:
-            for index,url in enumerate(body.urls):
+            for index,item in enumerate([*body.urls, *body.images]):
                 try:
-                    response=client.get(str(url));response.raise_for_status()
+                    if index < len(body.urls):
+                        response=client.get(str(item));response.raise_for_status()
+                        content=response.content
+                    else:
+                        encoded=item.split(',',1)[1] if item.startswith('data:') else item
+                        content=base64.b64decode(encoded,validate=True)
+                        if not content:
+                            raise ValueError('图片内容为空')
+                except (ValueError, binascii.Error, IndexError) as exc:
+                    raise HTTPException(422, {'index':index,'message':'Base64图片无效，未计算命中率'}) from exc
                 except httpx.HTTPError as exc:
                     raise HTTPException(502, {'index':index,'message':'图片下载失败，未计算命中率'}) from exc
                 try:
-                    result=preference.predict(status['model_version'],response.content)
+                    result=preference.predict(status['model_version'],content)
                     matched+=result['score']>=body.threshold
                 except (ValueError,OSError) as exc:
                     raise HTTPException(422, {'index':index,'message':'图片无法解码或模型文件不可用，未计算命中率'}) from exc
                 except RuntimeError as exc:
                     raise HTTPException(503, {'index':index,'message':'模型计算暂不可用，未计算命中率'}) from exc
-        percent=f'{matched/len(body.urls)*100:.2f}'.rstrip('0').rstrip('.')
+        percent=f'{matched/(len(body.urls)+len(body.images))*100:.2f}'.rstrip('0').rstrip('.')
         return {'hit_rate':percent+'%'}
 
 

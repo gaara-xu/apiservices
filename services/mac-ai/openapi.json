@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Mac AI 图像识别接口",
-    "version": "0.3.6"
+    "version": "0.3.7"
   },
   "paths": {
     "/api/v1/preference/features/{run_id}/{job_id}": {
@@ -131,7 +131,7 @@
           "个人喜好"
         ],
         "summary": "Match Rate",
-        "description": "并发接收URL批次，用同一喜好版本计算命中占比，仅返回百分比；任一失败不输出失真比例。",
+        "description": "并发接收URL和Base64批次，GIF按首帧用同一喜好版本计算命中占比，仅返回百分比；任一失败不输出失真比例。",
         "operationId": "match_rate_api_v1_preference_match_rate_post",
         "requestBody": {
           "content": {
@@ -699,8 +699,14 @@
               "format": "uri"
             },
             "type": "array",
-            "minItems": 1,
             "title": "Urls"
+          },
+          "images": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Images"
           },
           "threshold": {
             "type": "number",
@@ -711,9 +717,6 @@
           }
         },
         "type": "object",
-        "required": [
-          "urls"
-        ],
         "title": "MatchRateRequest"
       },
       "ValidationError": {

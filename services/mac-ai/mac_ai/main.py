@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from .engine import Engine
+from .log_cleanup import cleanup_loop
 from .preference import Preference, make_router
 
 
@@ -34,10 +35,15 @@ def create_app(engine=None):
 
     @asynccontextmanager
     async def lifespan(app):
-        """在启动时异步加载一份模型，让状态接口保持响应。"""
+        """启动模型和日志定期清空任务，退出时停止清理线程。"""
+        cleanup_event=threading.Event()
         if engine is None:
+            threading.Thread(target=cleanup_loop,args=(cleanup_event,),daemon=True,name='log-cleanup').start()
             threading.Thread(target=model_engine.load, daemon=True, name='model-loader').start()
-        yield
+        try:
+            yield
+        finally:
+            cleanup_event.set()
 
     app = FastAPI(title='Mac AI 图像识别接口', version=VERSION, lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.engine = model_engine

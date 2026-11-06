@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 SERVICE_DIR = Path(__file__).resolve().parents[1]
-VERSION = '0.3.5'
+VERSION = '0.3.6'
 
 
 def prepare_environment():

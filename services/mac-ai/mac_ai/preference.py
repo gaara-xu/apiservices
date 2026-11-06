@@ -2,7 +2,7 @@
 import io
 import base64
 import binascii
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl
 import hashlib
 import json
 import os
@@ -22,6 +22,11 @@ class DetectionImage(BaseModel):
 
 class DetectionRequest(BaseModel):
     images: list[DetectionImage] = Field(min_length=1)
+    threshold: float = Field(default=0.5, ge=0, le=1)
+
+
+class MatchRateRequest(BaseModel):
+    urls: list[HttpUrl] = Field(min_length=1)
     threshold: float = Field(default=0.5, ge=0, le=1)
 
 
@@ -176,6 +181,34 @@ def make_router(preference):
             return send_callback(job_id,run_id,{'label':label,'extracted':True,'reused':True,'content_sha256':feature['content_sha256']})
         finally:
             preference.lock.release()
+
+    @router.post('/match-rate')
+    def match_rate(body: MatchRateRequest):
+        """下载URL列表并用同一喜好版本计算命中占比，仅返回百分比；任一失败不输出失真比例。"""
+        status=preference.status()
+        if not status['trained']:
+            raise HTTPException(503, '个人喜好模型尚未训练')
+        if not preference.screen_lock.acquire(blocking=False):
+            raise HTTPException(429, '喜好筛查正在处理，请稍后重试', headers={'Retry-After':'2'})
+        matched=0
+        try:
+            with httpx.Client(trust_env=False,timeout=30,follow_redirects=True,max_redirects=5) as client:
+                for index,url in enumerate(body.urls):
+                    try:
+                        response=client.get(str(url));response.raise_for_status()
+                    except httpx.HTTPError as exc:
+                        raise HTTPException(502, {'index':index,'message':'图片下载失败，未计算命中率'}) from exc
+                    try:
+                        result=preference.predict(status['model_version'],response.content)
+                        matched+=result['score']>=body.threshold
+                    except (ValueError,OSError) as exc:
+                        raise HTTPException(422, {'index':index,'message':'图片无法解码或模型文件不可用，未计算命中率'}) from exc
+                    except RuntimeError as exc:
+                        raise HTTPException(503, {'index':index,'message':'模型计算暂不可用，未计算命中率'}) from exc
+            percent=f'{matched/len(body.urls)*100:.2f}'.rstrip('0').rstrip('.')
+            return {'hit_rate':percent+'%'}
+        finally:
+            preference.screen_lock.release()
 
     @router.post('/detect')
     def detect(body: DetectionRequest):
